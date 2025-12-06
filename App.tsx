@@ -55,6 +55,33 @@ const getBadgeColor = (code: string) => {
     return 'bg-gray-100 text-gray-600 border-gray-200';
 };
 
+// --- Name Matching Utility ---
+const normalizeName = (name: string) => name.toLowerCase().replace(/[^a-z\s]/g, '');
+
+const namesMatch = (n1: string, n2: string) => {
+    if (!n1 || !n2) return false;
+    const norm1 = normalizeName(n1);
+    const norm2 = normalizeName(n2);
+    if (norm1 === norm2) return true;
+
+    // Check "First Last" vs "Last First" vs "Last, First"
+    const parts1 = norm1.split(/\s+/).filter(x => x.length > 0);
+    const parts2 = norm2.split(/\s+/).filter(x => x.length > 0);
+
+    // If both have at least 2 parts, check set intersection
+    if (parts1.length >= 2 && parts2.length >= 2) {
+        const p1InP2 = parts1.every(p => parts2.includes(p));
+        const p2InP1 = parts2.every(p => parts1.includes(p));
+        if (p1InP2 || p2InP1) return true;
+    }
+
+    // Fallback: Partial match for shorter variations
+    // e.g. "Smith" matches "John Smith", "Beth" matches "Beth M"
+    if (norm1.includes(norm2) || norm2.includes(norm1)) return true;
+
+    return false;
+};
+
 export default function App() {
   // --- State ---
   const [activeTab, setActiveTab] = useState<'schedule' | 'tasks'>('tasks');
@@ -102,10 +129,10 @@ export default function App() {
 
   // --- Core Algorithm: Auto Distribute ---
   const autoDistribute = () => {
-    if(!window.confirm("This will overwrite current assignments for " + DAY_LABELS[selectedDay] + ". Continue?")) return;
-
     const staff = getDailyStaff();
-    if (staff.length === 0) { alert("No staff working today!"); return; }
+    if (staff.length === 0) { alert("No staff working on " + DAY_LABELS[selectedDay]); return; }
+
+    if(!window.confirm(`Auto-Assign will overwrite assignments for ${DAY_LABELS[selectedDay]}. Continue?`)) return;
 
     const newAssignments: TaskAssignmentMap = { ...assignments };
     // Clear current day
@@ -116,6 +143,8 @@ export default function App() {
     const assign = (empName: string, rule: TaskRule) => {
         const key = `${selectedDay}-${empName}`;
         if (!newAssignments[key]) newAssignments[key] = [];
+        // Prevent duplicates
+        if (newAssignments[key].some(t => t.id === rule.id)) return;
         newAssignments[key].push({ ...rule, instanceId: Date.now() + Math.random().toString() });
     };
 
@@ -127,27 +156,36 @@ export default function App() {
         return true;
     });
 
-    // 1. Pinned Tasks
+    // 1. Pinned Tasks (Shared List)
     validRules.filter(t => PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => pinned.push({ ...t, instanceId: 'pinned' }));
 
-    // 2. Skilled Logic
+    // 2. Skilled Logic (Uses Fuzzy Name Matching)
     validRules.filter(t => t.type === 'skilled' && !PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => {
-        const candidates = staff.filter(s => t.fallbackChain.includes(s.name));
+        // Find candidates where staff name fuzzily matches fallback chain name
+        const candidates = staff.filter(s => 
+            t.fallbackChain.some(fcName => namesMatch(s.name, fcName))
+        );
+
         if (candidates.length > 0) {
             // Sort by current load to balance
             candidates.sort((a, b) => {
                 const lenA = (newAssignments[`${selectedDay}-${a.name}`] || []).length;
                 const lenB = (newAssignments[`${selectedDay}-${b.name}`] || []).length;
                 // Secondary sort: Preference index in chain
-                if (lenA === lenB) return t.fallbackChain.indexOf(a.name) - t.fallbackChain.indexOf(b.name);
+                if (lenA === lenB) {
+                    // Try to find exact index in fallback chain
+                    const idxA = t.fallbackChain.findIndex(fc => namesMatch(a.name, fc));
+                    const idxB = t.fallbackChain.findIndex(fc => namesMatch(b.name, fc));
+                    return idxA - idxB;
+                }
                 return lenA - lenB;
             });
             assign(candidates[0].name, t);
         } else {
             // No skilled match? Assign to Lead or Supervisor if available, else random Stock
-            const backups = staff.filter(s => s.role === 'Lead' || s.role === 'Supervisor');
+            const backups = staff.filter(s => s.role?.toLowerCase().includes('lead') || s.role?.toLowerCase().includes('supervisor'));
             if(backups.length) assign(backups[0].name, t);
-            else assign(staff[0].name, t); // Fallback
+            else assign(staff[0].name, t); // Fallback to first avail
         }
     });
 
@@ -159,9 +197,15 @@ export default function App() {
     });
 
     validRules.filter(t => t.type === 'shift_based').forEach(t => {
-        ['Open', 'Mid', 'Close'].forEach(cat => {
+        ['Open', 'Mid', 'Close', 'Overnight'].forEach(cat => {
             if(shifts[cat as keyof typeof shifts].length > 0) {
-                 assign(shifts[cat as keyof typeof shifts][0].name, { ...t, name: `${t.name} (${cat})` });
+                 // Assign to first person in that shift type who has fewest tasks
+                 const avail = shifts[cat as keyof typeof shifts].sort((a,b) => {
+                    const lenA = (newAssignments[`${selectedDay}-${a.name}`] || []).length;
+                    const lenB = (newAssignments[`${selectedDay}-${b.name}`] || []).length;
+                    return lenA - lenB;
+                 });
+                 if(avail.length) assign(avail[0].name, { ...t, name: `${t.name} (${cat})` });
             }
         });
     });

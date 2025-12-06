@@ -1,13 +1,13 @@
 import { ScheduleData, TaskRule, TaskAssignmentMap, INITIAL_SCHEDULE } from "../types";
 import { DEFAULT_TASK_DB } from "../constants";
 
+// Updated version keys to force refresh of data structure
 const KEYS = {
-  SCHEDULE: 'smartRoster_schedule_v2',
-  TASK_DB: 'smartRoster_taskDB_v2',
-  ASSIGNMENTS: 'smartRoster_assignments_v2',
+  SCHEDULE: 'smartRoster_schedule_v4',
+  TASK_DB: 'smartRoster_taskDB_v4',
+  ASSIGNMENTS: 'smartRoster_assignments_v4',
 };
 
-// Simulate async backend calls
 export const StorageService = {
   getSchedule: (): ScheduleData => {
     const data = localStorage.getItem(KEYS.SCHEDULE);
@@ -20,6 +20,7 @@ export const StorageService = {
 
   getTaskDB: (): TaskRule[] => {
     const data = localStorage.getItem(KEYS.TASK_DB);
+    // If no data found, return the full new default DB
     return data ? JSON.parse(data) : DEFAULT_TASK_DB;
   },
 
