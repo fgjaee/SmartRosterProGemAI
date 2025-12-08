@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { X, Trash2, Plus, ArrowUp, ArrowDown, Database } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { X, Trash2, Plus, ArrowUp, ArrowDown, Database, Download, Upload, Save } from 'lucide-react';
 import { TaskRule, TaskType } from '../types';
 
 interface Props {
@@ -13,6 +13,7 @@ interface Props {
 export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNames }: Props) {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [newPersonInput, setNewPersonInput] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
@@ -20,118 +21,174 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
     setTasks(tasks.map(t => t.id === id ? { ...t, [field]: value } : t));
   };
 
-  const handleAddPerson = (id: number) => {
-    if (!newPersonInput) return;
-    setTasks(tasks.map(t => t.id === id ? { ...t, fallbackChain: [...t.fallbackChain, newPersonInput] } : t));
-    setNewPersonInput('');
+  const handleAddFallback = (id: number) => {
+      if(!newPersonInput) return;
+      setTasks(tasks.map(t => t.id === id ? { ...t, fallbackChain: [...t.fallbackChain, newPersonInput] } : t));
+      setNewPersonInput('');
   };
 
-  const handleRemovePerson = (taskId: number, idx: number) => {
-    setTasks(tasks.map(t => t.id === taskId ? { ...t, fallbackChain: t.fallbackChain.filter((_, i) => i !== idx) } : t));
+  const handleRemoveFallback = (id: number, nameToRemove: string) => {
+      setTasks(tasks.map(t => t.id === id ? { ...t, fallbackChain: t.fallbackChain.filter(n => n !== nameToRemove) } : t));
   };
 
-  const handleAddNewTask = () => {
-    const newId = Math.max(0, ...tasks.map(t => t.id)) + 1;
-    const newTask: TaskRule = { id: newId, code: "NEW", name: "New Task", type: "general", fallbackChain: [] };
-    setTasks([newTask, ...tasks]);
-    setEditingId(newId);
+  const handleExport = () => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(tasks, null, 2));
+    const a = document.createElement('a');
+    a.href = dataStr;
+    a.download = "smartroster_rules.json";
+    a.click();
+    a.remove();
+  };
+
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+        try {
+            const json = JSON.parse(event.target?.result as string);
+            if(Array.isArray(json)) {
+                setTasks(json);
+                alert("Rules imported successfully");
+            } else {
+                alert("Invalid format");
+            }
+        } catch(e) { alert("Error parsing JSON"); }
+    };
+    reader.readAsText(file);
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl">
-        <div className="p-5 border-b border-slate-200 flex justify-between items-center bg-slate-50 rounded-t-2xl">
-          <div className="flex items-center gap-3">
-            <div className="bg-indigo-100 p-2 rounded-lg text-indigo-700">
-               <Database size={20} />
-            </div>
-            <div>
-                <h3 className="text-xl font-bold text-slate-800">Task Database</h3>
-                <p className="text-xs text-slate-500">Configure automation rules and priority chains</p>
-            </div>
-          </div>
-          <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full transition-colors"><X size={24}/></button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-slate-50/50">
-          {tasks.map(t => (
-            <div key={t.id} className={`bg-white border rounded-xl shadow-sm transition-all duration-200 ${editingId === t.id ? 'ring-2 ring-indigo-500 border-indigo-500' : 'border-slate-200 hover:border-indigo-300'}`}>
-              <div className="p-4">
-                <div className="flex flex-col md:flex-row gap-4 mb-3">
-                  <div className="w-20 shrink-0">
-                    <label className="text-[10px] uppercase font-bold text-slate-400 mb-1 block">Code</label>
-                    <input 
-                      className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 font-bold text-center text-sm focus:outline-none focus:border-indigo-500" 
-                      value={t.code} 
-                      onChange={e => handleUpdate(t.id, 'code', e.target.value)} 
-                      onFocus={() => setEditingId(t.id)}
-                    />
-                  </div>
-                  <div className="flex-1">
-                    <label className="text-[10px] uppercase font-bold text-slate-400 mb-1 block">Task Name</label>
-                    <input 
-                        className="w-full font-bold text-slate-800 border-b border-transparent hover:border-slate-300 focus:border-indigo-500 focus:outline-none bg-transparent" 
-                        value={t.name} 
-                        onChange={e => handleUpdate(t.id, 'name', e.target.value)} 
-                        onFocus={() => setEditingId(t.id)}
-                    />
-                  </div>
-                  <div className="w-32">
-                     <label className="text-[10px] uppercase font-bold text-slate-400 mb-1 block">Type</label>
-                     <select 
-                        className="w-full border border-slate-200 rounded px-2 py-1 text-xs bg-slate-50"
-                        value={t.type} 
-                        onChange={e => handleUpdate(t.id, 'type', e.target.value as TaskType)}
-                    >
-                        <option value="skilled">Skilled</option>
-                        <option value="general">General</option>
-                        <option value="shift_based">Shift Based</option>
-                     </select>
-                  </div>
-                  <button 
-                    onClick={() => setTasks(tasks.filter(x => x.id !== t.id))}
-                    className="text-slate-300 hover:text-red-500 transition-colors p-2"
-                  >
-                    <Trash2 size={18} />
-                  </button>
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden">
+        
+        {/* Header */}
+        <div className="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0">
+            <div className="flex items-center gap-3">
+                <Database size={24} className="text-indigo-400"/>
+                <div>
+                    <h2 className="text-xl font-bold">Task Rules Database</h2>
+                    <p className="text-xs text-slate-400">Manage assignment logic and priorities</p>
                 </div>
-
-                {t.type === 'skilled' && (
-                  <div className="bg-slate-50 rounded-lg p-3 border border-slate-100">
-                     <div className="text-xs font-bold text-slate-500 mb-2 uppercase tracking-wide">Priority Chain (Fallback Logic)</div>
-                     <div className="flex flex-wrap gap-2 mb-3">
-                        {t.fallbackChain.length === 0 && <span className="text-xs text-slate-400 italic">No specific employees assigned.</span>}
-                        {t.fallbackChain.map((person, idx) => (
-                           <div key={idx} className="flex items-center bg-white border border-slate-200 shadow-sm rounded-md pl-3 pr-1 py-1 text-xs font-medium text-slate-700">
-                              {person}
-                              <button onClick={() => handleRemovePerson(t.id, idx)} className="ml-2 p-1 hover:bg-red-50 hover:text-red-500 rounded"><X size={12}/></button>
-                           </div>
-                        ))}
-                     </div>
-                     <div className="flex gap-2">
-                        <select 
-                            className="flex-1 border border-slate-300 rounded px-2 py-1.5 text-xs bg-white"
-                            value={editingId === t.id ? newPersonInput : ''}
-                            onChange={e => { setEditingId(t.id); setNewPersonInput(e.target.value); }}
-                        >
-                           <option value="">Select staff member...</option>
-                           {staffNames.map(n => <option key={n} value={n}>{n}</option>)}
-                        </select>
-                        <button onClick={() => handleAddPerson(t.id)} className="bg-indigo-600 text-white px-3 py-1 rounded text-xs font-bold hover:bg-indigo-700">Add</button>
-                     </div>
-                  </div>
-                )}
-              </div>
             </div>
-          ))}
+            <div className="flex items-center gap-3">
+                 <button onClick={handleExport} className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded text-xs font-bold border border-slate-700 transition-colors">
+                    <Download size={14}/> Export Rules
+                 </button>
+                 <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded text-xs font-bold border border-slate-700 transition-colors">
+                    <Upload size={14}/> Import Rules
+                 </button>
+                 <input type="file" ref={fileInputRef} className="hidden" accept=".json" onChange={handleImport} />
+                 
+                 <div className="h-6 w-px bg-slate-700 mx-2"></div>
+                 <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full transition-colors"><X size={20}/></button>
+            </div>
         </div>
 
-        <div className="p-5 border-t border-slate-200 bg-white rounded-b-2xl flex justify-between">
-           <span className="text-xs text-slate-400 flex items-center">Changes save automatically to backup.</span>
-           <button onClick={handleAddNewTask} className="flex items-center gap-2 bg-slate-900 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-black transition-colors">
-              <Plus size={16}/> Add New Rule
-           </button>
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-4 bg-slate-50">
+            <div className="space-y-3">
+                {tasks.map(task => (
+                    <div key={task.id} className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm flex flex-col md:flex-row gap-4 items-start md:items-center">
+                        <div className="flex-1 grid grid-cols-1 md:grid-cols-12 gap-4 w-full">
+                            
+                            {/* Code */}
+                            <div className="md:col-span-1">
+                                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Code</label>
+                                <input 
+                                    className="w-full text-sm font-bold border border-slate-300 rounded px-2 py-1 uppercase text-center"
+                                    value={task.code}
+                                    onChange={e => handleUpdate(task.id, 'code', e.target.value)}
+                                />
+                            </div>
+
+                            {/* Name */}
+                            <div className="md:col-span-3">
+                                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Task Name</label>
+                                <input 
+                                    className="w-full text-sm font-medium border border-slate-300 rounded px-2 py-1"
+                                    value={task.name}
+                                    onChange={e => handleUpdate(task.id, 'name', e.target.value)}
+                                />
+                            </div>
+
+                            {/* Type */}
+                            <div className="md:col-span-2">
+                                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Type</label>
+                                <select 
+                                    className="w-full text-sm border border-slate-300 rounded px-2 py-1 bg-white"
+                                    value={task.type}
+                                    onChange={e => handleUpdate(task.id, 'type', e.target.value as TaskType)}
+                                >
+                                    <option value="skilled">Skilled (Priority)</option>
+                                    <option value="general">General (Round Robin)</option>
+                                    <option value="shift_based">Shift Based</option>
+                                </select>
+                            </div>
+
+                             {/* Effort */}
+                             <div className="md:col-span-1">
+                                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Est. Mins</label>
+                                <input 
+                                    type="number"
+                                    className="w-full text-sm border border-slate-300 rounded px-2 py-1"
+                                    value={task.effort || 30}
+                                    onChange={e => handleUpdate(task.id, 'effort', parseInt(e.target.value))}
+                                />
+                            </div>
+
+                            {/* Fallback Chain */}
+                            <div className="md:col-span-5">
+                                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Priority Assignment Chain</label>
+                                <div className="flex flex-wrap gap-2 items-center">
+                                    {task.fallbackChain.map((person, idx) => (
+                                        <span key={idx} className="inline-flex items-center gap-1 px-2 py-1 bg-indigo-50 text-indigo-700 text-xs rounded border border-indigo-100" title={`Priority Level ${idx + 1}`}>
+                                            <span className="font-bold mr-1">{idx + 1}.</span> {person}
+                                            <button onClick={() => handleRemoveFallback(task.id, person)} className="hover:text-red-500"><X size={10}/></button>
+                                        </span>
+                                    ))}
+                                    <div className="flex items-center gap-1 relative group">
+                                         <button onClick={() => setEditingId(editingId === task.id ? null : task.id)} className="w-6 h-6 flex items-center justify-center rounded-full border border-dashed border-slate-300 text-slate-400 hover:text-indigo-600 hover:border-indigo-400">
+                                            <Plus size={12}/>
+                                         </button>
+                                         {editingId === task.id && (
+                                             <div className="absolute top-8 left-0 z-10 bg-white shadow-xl border border-slate-200 p-2 rounded-lg w-48">
+                                                 <input 
+                                                    autoFocus
+                                                    className="w-full text-xs border border-indigo-300 rounded px-2 py-1 mb-2 outline-none"
+                                                    placeholder="Type Name..."
+                                                    value={newPersonInput}
+                                                    onChange={e => setNewPersonInput(e.target.value)}
+                                                    onKeyDown={e => {
+                                                        if(e.key === 'Enter') handleAddFallback(task.id);
+                                                    }}
+                                                 />
+                                                 <div className="max-h-32 overflow-y-auto">
+                                                     {staffNames.filter(n => n.toLowerCase().includes(newPersonInput.toLowerCase()) && !task.fallbackChain.includes(n)).map(name => (
+                                                         <div key={name} onClick={() => { setNewPersonInput(name); handleAddFallback(task.id); }} className="text-xs px-2 py-1 hover:bg-indigo-50 cursor-pointer rounded">
+                                                             {name}
+                                                         </div>
+                                                     ))}
+                                                 </div>
+                                             </div>
+                                         )}
+                                    </div>
+                                </div>
+                            </div>
+
+                        </div>
+                    </div>
+                ))}
+                
+                <button onClick={() => {
+                    const newId = Math.max(...tasks.map(t => t.id)) + 1;
+                    setTasks([...tasks, { id: newId, code: 'NEW', name: 'New Task', type: 'general', fallbackChain: [], effort: 30 }]);
+                }} className="w-full py-3 border-2 border-dashed border-slate-300 rounded-lg text-slate-500 font-bold hover:border-indigo-500 hover:text-indigo-600 hover:bg-white transition-all flex items-center justify-center gap-2">
+                    <Plus size={20}/> Add New Rule
+                </button>
+            </div>
         </div>
+
       </div>
     </div>
   );

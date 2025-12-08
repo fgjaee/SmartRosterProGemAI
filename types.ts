@@ -1,3 +1,4 @@
+
 export type DayKey = 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat';
 
 export interface Shift {
@@ -28,6 +29,7 @@ export interface TaskRule {
   type: TaskType;
   fallbackChain: string[]; // List of employee names prioritized for this task
   timing?: string;
+  effort?: number; // Estimated duration in minutes
 }
 
 export interface AssignedTask extends TaskRule {

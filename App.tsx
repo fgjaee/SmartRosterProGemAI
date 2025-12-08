@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Users, Calendar, CheckCircle, Wand2, Printer, 
   Download, Upload, Plus, Trash2, ArrowRight, X, 
-  Menu, RotateCcw, Save, AlertCircle, ScanLine, Loader2
+  Menu, RotateCcw, Save, AlertCircle, ScanLine, Loader2, Clock
 } from 'lucide-react';
 
 import { 
@@ -18,30 +18,165 @@ import TaskDBModal from './components/TaskDBModal';
 
 const cleanTaskName = (n: string) => n.replace(/\(Sat Only\)/gi, '').replace(/\(Fri Only\)/gi, '').replace(/\(Excl.*?\)/gi, '').trim();
 
-const parseTime = (timeStr: string, role: string) => {
+const getPrevDay = (d: DayKey): DayKey => {
+    const days: DayKey[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+    const idx = days.indexOf(d);
+    return days[idx === 0 ? 6 : idx - 1];
+};
+
+const parseTime = (timeStr: string, role: string, isSpillover = false) => {
     if (!timeStr || timeStr === 'OFF' || timeStr === 'LOANED OUT') return { h: 24, label: 'OFF', category: 'OFF' };
-    const parts = timeStr.split('-');
+    
+    // Normalize string
+    const lower = timeStr.toLowerCase();
+    const parts = lower.replace(/\s/g, '').split('-');
     if (parts.length < 2) return { h: 24, label: timeStr, category: 'OFF' };
 
-    let start = parseInt(parts[0].split(':')[0]);
+    let startStr = parts[0];
     let label = parts[0];
-    let category = 'Close';
+    let category = 'Mid';
 
-    if (start === 12) { label += ' PM'; start = 12; }
-    else if (start >= 1 && start <= 6) {
-        if (role?.toLowerCase().includes('overnight') && start < 4) { label += ' AM'; category = 'Overnight'; }
-        else if (start >= 3 && start < 12 && !role?.toLowerCase().includes('overnight')) { label += ' AM'; category = 'Open'; }
-        else { label += ' PM'; start += 12; category = 'Mid'; }
-    } else if (start >= 7 && start <= 11) {
-        if (role?.toLowerCase().includes('overnight')) { label += ' PM'; start += 12; category = 'Overnight'; }
-        else { label += ' AM'; category = 'Mid'; }
+    // Helper to extract hour safely
+    const getHour = (s: string) => {
+        const t = parseInt(s.split(':')[0]);
+        if (s.includes('p') && t !== 12) return t + 12;
+        if (s.includes('a') && t === 12) return 0; // 12am
+        return t;
+    };
+
+    let start = getHour(startStr);
+
+    // Heuristics for 12h format without suffix (e.g. "10:00-6:00")
+    if (!startStr.includes('m')) {
+        if (start >= 1 && start <= 6) {
+             // 1-6. Usually PM unless role says Overnight (then AM)
+             if (role?.toLowerCase().includes('overnight') && start <= 4) {
+                 category = 'Overnight';
+                 label += ' AM';
+             } else if (start === 4 || start === 5 || start === 6) {
+                 if (role?.toLowerCase().includes('lead') || role?.toLowerCase().includes('open')) {
+                    category = 'Open';
+                    label += ' AM';
+                 } else {
+                    category = 'Mid'; // PM
+                    start += 12;
+                    label += ' PM';
+                 }
+             } else {
+                 start += 12;
+                 category = 'Mid';
+                 label += ' PM';
+             }
+        } 
+        else if (start >= 7 && start <= 11) {
+            // 7-11. Usually AM.
+            // But if role is Overnight or Stock with 10/11 start, likely PM.
+            if (role?.toLowerCase().includes('overnight')) {
+                start += 12; 
+                category = 'Overnight';
+                label += ' PM';
+            } else if ((start === 10 || start === 11) && role?.toLowerCase().includes('stock')) {
+                 // Heuristic: Stock team starting at 10 or 11 is likely Night Crew
+                 start += 12;
+                 category = 'Overnight';
+                 label += ' PM';
+            } else {
+                category = 'Mid';
+                label += ' AM';
+            }
+        }
+        else if (start === 12) {
+             start = 12;
+             label += ' PM';
+             category = 'Mid';
+        }
+    } else {
+        // Has suffix
+        if (startStr.includes('p') || (startStr.includes('12') && !startStr.includes('a'))) {
+             if(start < 12) start += 12;
+        }
+        if (startStr.includes('a') && start === 12) start = 0;
+    }
+
+    // Explicit Overrides based on computed 24h 'start'
+    if (start >= 20 || start <= 3) category = 'Overnight'; // 8pm - 3am starts
+    if (start >= 4 && start <= 6) category = 'Open';       // 4am - 6am starts
+
+    if (isSpillover) {
+        category = 'Overnight';
+        label += ' (Prev)';
+    }
+
+    return { h: start, label, category };
+};
+
+const formatShiftString = (timeStr: string, role: string) => {
+    if (!timeStr || timeStr === 'OFF' || timeStr === 'LOANED OUT') return timeStr;
+    // If already has suffix, assume manual entry is correct
+    if (timeStr.toLowerCase().match(/[a-z]/)) return timeStr;
+
+    const parts = timeStr.split('-');
+    if (parts.length < 2) return timeStr;
+
+    const startRaw = parts[0].trim();
+    const endRaw = parts[1].trim();
+
+    // 1. Determine Start 24h
+    const { h: start24 } = parseTime(timeStr, role);
+    
+    // 2. Determine End 24h
+    const endParts = endRaw.split(':');
+    let end12 = parseInt(endParts[0]);
+    if (end12 === 0) end12 = 12; // safety
+    
+    const endMin = endParts[1] || '00';
+
+    // Try candidates: End as AM, End as PM, End next day...
+    // Candidates are 24h representations of the 12h digit
+    // e.g. 1 -> 1, 13, 25, 37
+    const targets = [
+        end12 === 12 ? 0 : end12,        // AM same day (e.g. 12am is 0)
+        end12 === 12 ? 12 : end12 + 12,  // PM same day
+        (end12 === 12 ? 0 : end12) + 24,       // AM next day
+        (end12 === 12 ? 12 : end12 + 12) + 24  // PM next day
+    ];
+
+    // Find target that gives duration approx 3-14 hours
+    let selectedEnd = -1;
+    for (const t of targets) {
+        const diff = t - start24;
+        if (diff >= 3 && diff <= 16) { // slightly wider range
+            selectedEnd = t;
+            break;
+        }
     }
     
-    // Explicit overrides
-    if (start >= 4 && start <= 6 && category !== 'Overnight') category = 'Open';
-    if (start >= 21 || start < 3) category = 'Overnight';
+    // Fallback: Use smallest positive diff
+    if (selectedEnd === -1) {
+         let bestDist = Infinity;
+         for (const t of targets) {
+             const d = t - start24;
+             if (d > 0 && d < bestDist) {
+                 bestDist = d;
+                 selectedEnd = t;
+             }
+         }
+    }
     
-    return { h: start, label, category };
+    if (selectedEnd === -1) selectedEnd = start24 + 8; // final fallback
+
+    // 3. Format Output
+    const formatTime = (h24: number, min: string) => {
+        // Normalize
+        let h = h24 % 24;
+        const ampm = h >= 12 ? 'PM' : 'AM';
+        h = h % 12;
+        if (h === 0) h = 12;
+        return `${h}:${min}${ampm}`;
+    };
+
+    const startMin = startRaw.split(':')[1] || '00';
+    return `${formatTime(start24, startMin)} - ${formatTime(selectedEnd, endMin)}`;
 };
 
 const getBadgeColor = (code: string) => {
@@ -64,19 +199,15 @@ const namesMatch = (n1: string, n2: string) => {
     const norm2 = normalizeName(n2);
     if (norm1 === norm2) return true;
 
-    // Check "First Last" vs "Last First" vs "Last, First"
     const parts1 = norm1.split(/\s+/).filter(x => x.length > 0);
     const parts2 = norm2.split(/\s+/).filter(x => x.length > 0);
 
-    // If both have at least 2 parts, check set intersection
     if (parts1.length >= 2 && parts2.length >= 2) {
         const p1InP2 = parts1.every(p => parts2.includes(p));
         const p2InP1 = parts2.every(p => parts1.includes(p));
         if (p1InP2 || p2InP1) return true;
     }
 
-    // Fallback: Partial match for shorter variations
-    // e.g. "Smith" matches "John Smith", "Beth" matches "Beth M"
     if (norm1.includes(norm2) || norm2.includes(norm1)) return true;
 
     return false;
@@ -104,15 +235,38 @@ export default function App() {
 
   // --- Helpers ---
   const getDailyStaff = useCallback(() => {
-    return schedule.shifts.filter(s => {
+    const todayStaff = schedule.shifts.map(s => {
         const t = s[selectedDay];
-        return t && t !== 'OFF' && t !== 'LOANED OUT';
-    });
+        if (!t || t === 'OFF' || t === 'LOANED OUT') return null;
+        return { ...s, activeTime: t, isSpillover: false };
+    }).filter(s => s !== null);
+
+    // Check previous day for overnight shifts (starts >= 8pm or categorized as Overnight)
+    const prevDay = getPrevDay(selectedDay);
+    const spilloverStaff = schedule.shifts.map(s => {
+        const t = s[prevDay];
+        if (!t || t === 'OFF' || t === 'LOANED OUT') return null;
+        
+        // Parse the PREVIOUS day's time to see if it's overnight
+        const { category } = parseTime(t, s.role);
+        if (category === 'Overnight') {
+            return { ...s, activeTime: t, isSpillover: true };
+        }
+        return null;
+    }).filter(s => s !== null);
+
+    return [...spilloverStaff, ...todayStaff] as (Shift & { activeTime: string, isSpillover: boolean })[];
   }, [schedule, selectedDay]);
 
   const getStaffTasks = (empName: string) => {
     const key = `${selectedDay}-${empName}`;
     return assignments[key] || [];
+  };
+
+  const getWorkerLoad = (empName: string, currentAssignments: TaskAssignmentMap) => {
+    const key = `${selectedDay}-${empName}`;
+    const tasks = currentAssignments[key] || [];
+    return tasks.reduce((acc, t) => acc + (t.effort || 30), 0);
   };
 
   const sortTasks = (tasks: AssignedTask[]) => {
@@ -130,7 +284,7 @@ export default function App() {
   // --- Core Algorithm: Auto Distribute ---
   const autoDistribute = () => {
     const staff = getDailyStaff();
-    if (staff.length === 0) { alert("No staff working on " + DAY_LABELS[selectedDay]); return; }
+    if (staff.length === 0) { alert("No staff found working on " + DAY_LABELS[selectedDay]); return; }
 
     if(!window.confirm(`Auto-Assign will overwrite assignments for ${DAY_LABELS[selectedDay]}. Continue?`)) return;
 
@@ -143,7 +297,6 @@ export default function App() {
     const assign = (empName: string, rule: TaskRule) => {
         const key = `${selectedDay}-${empName}`;
         if (!newAssignments[key]) newAssignments[key] = [];
-        // Prevent duplicates
         if (newAssignments[key].some(t => t.id === rule.id)) return;
         newAssignments[key].push({ ...rule, instanceId: Date.now() + Math.random().toString() });
     };
@@ -159,64 +312,79 @@ export default function App() {
     // 1. Pinned Tasks (Shared List)
     validRules.filter(t => PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => pinned.push({ ...t, instanceId: 'pinned' }));
 
-    // 2. Skilled Logic (Uses Fuzzy Name Matching)
+    // 2. Skilled Logic
     validRules.filter(t => t.type === 'skilled' && !PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => {
-        // Find candidates where staff name fuzzily matches fallback chain name
         const candidates = staff.filter(s => 
             t.fallbackChain.some(fcName => namesMatch(s.name, fcName))
         );
 
         if (candidates.length > 0) {
-            // Sort by current load to balance
             candidates.sort((a, b) => {
-                const lenA = (newAssignments[`${selectedDay}-${a.name}`] || []).length;
-                const lenB = (newAssignments[`${selectedDay}-${b.name}`] || []).length;
-                // Secondary sort: Preference index in chain
-                if (lenA === lenB) {
-                    // Try to find exact index in fallback chain
-                    const idxA = t.fallbackChain.findIndex(fc => namesMatch(a.name, fc));
-                    const idxB = t.fallbackChain.findIndex(fc => namesMatch(b.name, fc));
-                    return idxA - idxB;
+                // If task is Truck Unload (ON) or Breakdown (EOD), prioritize Spillover staff
+                if (['ON', 'EOD'].includes(t.code)) {
+                    if (a.isSpillover && !b.isSpillover) return -1;
+                    if (!a.isSpillover && b.isSpillover) return 1;
                 }
-                return lenA - lenB;
+
+                const loadA = getWorkerLoad(a.name, newAssignments);
+                const loadB = getWorkerLoad(b.name, newAssignments);
+                const skillIndexA = t.fallbackChain.findIndex(fc => namesMatch(a.name, fc));
+                const skillIndexB = t.fallbackChain.findIndex(fc => namesMatch(b.name, fc));
+
+                // Granular Balance: If loads are roughly equal (within 30 mins), prioritize skill rank (lower index is better)
+                if (Math.abs(loadA - loadB) <= 30) {
+                    return skillIndexA - skillIndexB;
+                }
+
+                // Otherwise, prioritize the person with less work
+                return loadA - loadB;
             });
             assign(candidates[0].name, t);
         } else {
-            // No skilled match? Assign to Lead or Supervisor if available, else random Stock
-            const backups = staff.filter(s => s.role?.toLowerCase().includes('lead') || s.role?.toLowerCase().includes('supervisor'));
-            if(backups.length) assign(backups[0].name, t);
-            else assign(staff[0].name, t); // Fallback to first avail
+            // Fallback for skilled tasks with no skilled staff working
+            const backups = staff.filter(s => 
+                s.role?.toLowerCase().includes('overnight') || 
+                s.role?.toLowerCase().includes('stock') ||
+                s.role?.toLowerCase().includes('lead')
+            );
+            const targetGroup = backups.length ? backups : staff;
+            targetGroup.sort((a, b) => {
+                 const loadA = getWorkerLoad(a.name, newAssignments);
+                 const loadB = getWorkerLoad(b.name, newAssignments);
+                 return loadA - loadB;
+            });
+            assign(targetGroup[0].name, t);
         }
     });
 
     // 3. Shift Based & General
     const shifts = { 'Open': [] as Shift[], 'Mid': [] as Shift[], 'Close': [] as Shift[], 'Overnight': [] as Shift[] };
     staff.forEach(s => {
-        const { category } = parseTime(s[selectedDay], s.role);
+        const { category } = parseTime(s.activeTime, s.role, s.isSpillover);
         if(category !== 'OFF') shifts[category as keyof typeof shifts].push(s);
     });
 
+    // Assign Shift-based tasks ensuring workload balance
     validRules.filter(t => t.type === 'shift_based').forEach(t => {
         ['Open', 'Mid', 'Close', 'Overnight'].forEach(cat => {
-            if(shifts[cat as keyof typeof shifts].length > 0) {
-                 // Assign to first person in that shift type who has fewest tasks
-                 const avail = shifts[cat as keyof typeof shifts].sort((a,b) => {
-                    const lenA = (newAssignments[`${selectedDay}-${a.name}`] || []).length;
-                    const lenB = (newAssignments[`${selectedDay}-${b.name}`] || []).length;
-                    return lenA - lenB;
+            const group = shifts[cat as keyof typeof shifts];
+            if(group.length > 0) {
+                 const avail = [...group].sort((a,b) => {
+                    const loadA = getWorkerLoad(a.name, newAssignments);
+                    const loadB = getWorkerLoad(b.name, newAssignments);
+                    return loadA - loadB;
                  });
                  if(avail.length) assign(avail[0].name, { ...t, name: `${t.name} (${cat})` });
             }
         });
     });
 
-    // General Distribution (Round Robin)
+    // Assign General tasks (Round robin based on effort load)
     validRules.filter(t => t.type === 'general' && !PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => {
-         // Sort staff by load
          const sortedStaff = [...staff].sort((a, b) => {
-            const lenA = (newAssignments[`${selectedDay}-${a.name}`] || []).length;
-            const lenB = (newAssignments[`${selectedDay}-${b.name}`] || []).length;
-            return lenA - lenB;
+            const loadA = getWorkerLoad(a.name, newAssignments);
+            const loadB = getWorkerLoad(b.name, newAssignments);
+            return loadA - loadB;
          });
          assign(sortedStaff[0].name, t);
     });
@@ -229,7 +397,7 @@ export default function App() {
       if(!manualTaskInput || !manualTaskInput.text) return;
       const key = `${selectedDay}-${manualTaskInput.emp}`;
       const newTask: AssignedTask = {
-          id: 9999, code: 'MAN', name: manualTaskInput.text, type: 'manual', fallbackChain: [], instanceId: Date.now().toString()
+          id: 9999, code: 'MAN', name: manualTaskInput.text, type: 'manual', fallbackChain: [], instanceId: Date.now().toString(), effort: 30
       };
       setAssignments(prev => ({
           ...prev,
@@ -278,14 +446,12 @@ export default function App() {
           alert("Failed to scan schedule. Ensure the image is clear and try again.");
       } finally {
           setIsScanning(false);
-          // Reset input
           if (scanInputRef.current) scanInputRef.current.value = '';
       }
   };
 
   return (
     <div className="flex flex-col h-screen bg-slate-100 font-sans text-slate-900">
-      {/* --- Header --- */}
       <nav className="bg-slate-900 text-white px-6 py-3 flex justify-between items-center shrink-0 shadow-md z-20 no-print">
         <div className="flex items-center gap-3">
            <div className="bg-indigo-500 p-1.5 rounded-lg">
@@ -310,10 +476,7 @@ export default function App() {
         </div>
       </nav>
 
-      {/* --- Main Content --- */}
       <main className="flex-1 overflow-hidden relative flex flex-col">
-        
-        {/* TASK VIEW */}
         {activeTab === 'tasks' && (
             <>
             <div className="bg-white border-b border-slate-200 px-6 py-3 flex justify-between items-center shrink-0 no-print shadow-sm">
@@ -342,7 +505,6 @@ export default function App() {
 
             <div className="flex-1 overflow-y-auto p-6 bg-slate-100">
                 <div className="max-w-[1600px] mx-auto">
-                    {/* Shared/Pinned Header for Print */}
                     <div className="print-only mb-6 border-b-2 border-slate-900 pb-4">
                         <h1 className="text-3xl font-black uppercase tracking-tight mb-2">Daily Roster & Worklist</h1>
                         <div className="flex justify-between items-end">
@@ -366,7 +528,9 @@ export default function App() {
                     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 print:grid-cols-2 print:gap-8">
                         {getDailyStaff().map(staff => {
                             const staffTasks = sortTasks(getStaffTasks(staff.name));
-                            const { label, category } = parseTime(staff[selectedDay], staff.role);
+                            const { label, category } = parseTime(staff.activeTime, staff.role, staff.isSpillover);
+                            const totalEffort = getWorkerLoad(staff.name, assignments);
+                            const estimatedHours = (totalEffort / 60).toFixed(1);
 
                             return (
                                 <div key={staff.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print:border-2 print:border-slate-800 print:shadow-none break-inside-avoid">
@@ -375,11 +539,16 @@ export default function App() {
                                             <h3 className="font-bold text-lg text-slate-800 leading-none">{staff.name}</h3>
                                             <div className="text-xs font-bold text-slate-500 mt-1 uppercase tracking-wide flex items-center gap-2">
                                                 {label} 
-                                                <span className="bg-slate-200 text-slate-600 px-1.5 rounded text-[10px] print:border print:border-slate-400">{category}</span>
+                                                <span className={`px-1.5 rounded text-[10px] print:border print:border-slate-400 ${staff.isSpillover ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-600'}`}>{category}</span>
                                             </div>
                                         </div>
-                                        <div className="h-8 w-8 bg-indigo-100 text-indigo-700 rounded-full flex items-center justify-center font-bold text-sm print:hidden">
-                                            {staffTasks.length}
+                                        <div className="flex flex-col items-end print:hidden">
+                                            <div className="h-8 w-8 bg-indigo-100 text-indigo-700 rounded-full flex items-center justify-center font-bold text-sm mb-1">
+                                                {staffTasks.length}
+                                            </div>
+                                            <div className="text-[10px] font-bold text-slate-400 flex items-center gap-1">
+                                                <Clock size={10}/> ~{estimatedHours}h
+                                            </div>
                                         </div>
                                     </div>
                                     <div className="p-2 min-h-[150px]">
@@ -398,8 +567,9 @@ export default function App() {
                                                         <div className="hidden print:block mr-2 mt-1">
                                                             <div className="w-3 h-3 border border-slate-600"></div>
                                                         </div>
-                                                        <div className="flex-1 text-sm font-medium text-slate-700 leading-snug">
-                                                            {cleanTaskName(t.name)}
+                                                        <div className="flex-1">
+                                                            <div className="text-sm font-medium text-slate-700 leading-snug">{cleanTaskName(t.name)}</div>
+                                                            {t.effort && <div className="text-[10px] text-slate-400 font-medium print:hidden">{t.effort} mins</div>}
                                                         </div>
                                                         <button 
                                                             onClick={() => handleDeleteTask(staff.name, t.instanceId)}
@@ -444,7 +614,6 @@ export default function App() {
             </>
         )}
 
-        {/* SCHEDULE VIEW */}
         {activeTab === 'schedule' && (
             <div className="flex-1 overflow-auto p-8 bg-slate-50 flex justify-center">
                 <div className="w-full max-w-6xl bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
@@ -512,8 +681,8 @@ export default function App() {
                                                         }}
                                                     />
                                                 ) : (
-                                                    <span className={`text-xs font-medium px-2 py-1 rounded ${shift[day as DayKey] === 'OFF' ? 'text-slate-300 bg-slate-50' : 'text-slate-700 bg-white border border-slate-200'}`}>
-                                                        {shift[day as DayKey]}
+                                                    <span className={`text-xs font-medium px-2 py-1 rounded whitespace-nowrap ${shift[day as DayKey] === 'OFF' ? 'text-slate-300 bg-slate-50' : 'text-slate-700 bg-white border border-slate-200'}`}>
+                                                        {formatShiftString(shift[day as DayKey], shift.role)}
                                                     </span>
                                                 )}
                                             </td>
