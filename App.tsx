@@ -36,25 +36,26 @@ const parseTime = (timeStr: string, role: string, isSpillover = false) => {
     let label = parts[0];
     let category = 'Mid';
 
-    // Helper to extract hour safely
-    const getHour = (s: string) => {
-        const t = parseInt(s.split(':')[0]);
-        if (s.includes('p') && t !== 12) return t + 12;
-        if (s.includes('a') && t === 12) return 0; // 12am
-        return t;
-    };
+    const hasAm = startStr.includes('a') || startStr.includes('am');
+    const hasPm = startStr.includes('p') || startStr.includes('pm');
 
-    let start = getHour(startStr);
+    let start = parseInt(startStr.split(':')[0]);
 
-    // Heuristics for 12h format without suffix (e.g. "10:00-6:00")
-    if (!startStr.includes('m')) {
+    // 1. Explicit Suffix Logic (Highest Accuracy)
+    if (hasAm || hasPm) {
+        if (hasPm && start !== 12) start += 12;
+        if (hasAm && start === 12) start = 0; // 12 AM is 0:00
+    } 
+    // 2. Heuristic Fallback (If no suffix provided)
+    else {
+        // Assume 1-6 is PM unless Overnight or Early Open
         if (start >= 1 && start <= 6) {
-             // 1-6. Usually PM unless role says Overnight (then AM)
              if (role?.toLowerCase().includes('overnight') && start <= 4) {
                  category = 'Overnight';
                  label += ' AM';
              } else if (start === 4 || start === 5 || start === 6) {
-                 if (role?.toLowerCase().includes('lead') || role?.toLowerCase().includes('open')) {
+                 // Openers / Supervisors often start 4-6 AM
+                 if (role?.toLowerCase().includes('lead') || role?.toLowerCase().includes('open') || role?.toLowerCase().includes('supervisor') || role?.toLowerCase().includes('stock')) {
                     category = 'Open';
                     label += ' AM';
                  } else {
@@ -70,13 +71,12 @@ const parseTime = (timeStr: string, role: string, isSpillover = false) => {
         } 
         else if (start >= 7 && start <= 11) {
             // 7-11. Usually AM.
-            // But if role is Overnight or Stock with 10/11 start, likely PM.
             if (role?.toLowerCase().includes('overnight')) {
                 start += 12; 
                 category = 'Overnight';
                 label += ' PM';
             } else if ((start === 10 || start === 11) && role?.toLowerCase().includes('stock')) {
-                 // Heuristic: Stock team starting at 10 or 11 is likely Night Crew
+                 // Stock starting late is likely night crew
                  start += 12;
                  category = 'Overnight';
                  label += ' PM';
@@ -90,21 +90,22 @@ const parseTime = (timeStr: string, role: string, isSpillover = false) => {
              label += ' PM';
              category = 'Mid';
         }
-    } else {
-        // Has suffix
-        if (startStr.includes('p') || (startStr.includes('12') && !startStr.includes('a'))) {
-             if(start < 12) start += 12;
-        }
-        if (startStr.includes('a') && start === 12) start = 0;
     }
 
-    // Explicit Overrides based on computed 24h 'start'
+    // Determine Category based on 24h start time
     if (start >= 20 || start <= 3) category = 'Overnight'; // 8pm - 3am starts
-    if (start >= 4 && start <= 6) category = 'Open';       // 4am - 6am starts
+    else if (start >= 4 && start <= 6) category = 'Open';  // 4am - 6am starts
+    else if (start >= 7 && start <= 15) category = 'Mid';  // 7am - 3pm starts
+    else category = 'Close';                               // 4pm - 7pm starts
 
     if (isSpillover) {
         category = 'Overnight';
         label += ' (Prev)';
+    }
+
+    // Clean label for display (ensure AM/PM is correct if we inferred it)
+    if (!hasAm && !hasPm && !label.toUpperCase().match(/(AM|PM)/)) {
+        label = timeStr.split('-')[0]; // Reset to original if parsing failed visually
     }
 
     return { h: start, label, category };
@@ -112,7 +113,7 @@ const parseTime = (timeStr: string, role: string, isSpillover = false) => {
 
 const formatShiftString = (timeStr: string, role: string) => {
     if (!timeStr || timeStr === 'OFF' || timeStr === 'LOANED OUT') return timeStr;
-    // If already has suffix, assume manual entry is correct
+    // If it already has AM/PM, trust it (the new OCR model provides this)
     if (timeStr.toLowerCase().match(/[a-z]/)) return timeStr;
 
     const parts = timeStr.split('-');
@@ -132,42 +133,28 @@ const formatShiftString = (timeStr: string, role: string) => {
     const endMin = endParts[1] || '00';
 
     // Try candidates: End as AM, End as PM, End next day...
-    // Candidates are 24h representations of the 12h digit
-    // e.g. 1 -> 1, 13, 25, 37
     const targets = [
-        end12 === 12 ? 0 : end12,        // AM same day (e.g. 12am is 0)
-        end12 === 12 ? 12 : end12 + 12,  // PM same day
-        (end12 === 12 ? 0 : end12) + 24,       // AM next day
-        (end12 === 12 ? 12 : end12 + 12) + 24  // PM next day
+        end12 === 12 ? 0 : end12,        
+        end12 === 12 ? 12 : end12 + 12,  
+        (end12 === 12 ? 0 : end12) + 24,       
+        (end12 === 12 ? 12 : end12 + 12) + 24  
     ];
 
     // Find target that gives duration approx 3-14 hours
     let selectedEnd = -1;
     for (const t of targets) {
         const diff = t - start24;
-        if (diff >= 3 && diff <= 16) { // slightly wider range
+        if (diff >= 3 && diff <= 16) { 
             selectedEnd = t;
             break;
         }
     }
     
-    // Fallback: Use smallest positive diff
-    if (selectedEnd === -1) {
-         let bestDist = Infinity;
-         for (const t of targets) {
-             const d = t - start24;
-             if (d > 0 && d < bestDist) {
-                 bestDist = d;
-                 selectedEnd = t;
-             }
-         }
-    }
-    
-    if (selectedEnd === -1) selectedEnd = start24 + 8; // final fallback
+    // Fallback
+    if (selectedEnd === -1) selectedEnd = start24 + 8;
 
     // 3. Format Output
     const formatTime = (h24: number, min: string) => {
-        // Normalize
         let h = h24 % 24;
         const ampm = h >= 12 ? 'PM' : 'AM';
         h = h % 12;
@@ -235,19 +222,19 @@ export default function App() {
 
   // --- Helpers ---
   const getDailyStaff = useCallback(() => {
-    const todayStaff = schedule.shifts.map(s => {
+    const shifts = schedule?.shifts || [];
+    const todayStaff = shifts.map(s => {
         const t = s[selectedDay];
         if (!t || t === 'OFF' || t === 'LOANED OUT') return null;
         return { ...s, activeTime: t, isSpillover: false };
     }).filter(s => s !== null);
 
-    // Check previous day for overnight shifts (starts >= 8pm or categorized as Overnight)
+    // Check previous day for overnight shifts
     const prevDay = getPrevDay(selectedDay);
-    const spilloverStaff = schedule.shifts.map(s => {
+    const spilloverStaff = shifts.map(s => {
         const t = s[prevDay];
         if (!t || t === 'OFF' || t === 'LOANED OUT') return null;
         
-        // Parse the PREVIOUS day's time to see if it's overnight
         const { category } = parseTime(t, s.role);
         if (category === 'Overnight') {
             return { ...s, activeTime: t, isSpillover: true };
@@ -284,7 +271,12 @@ export default function App() {
   // --- Core Algorithm: Auto Distribute ---
   const autoDistribute = () => {
     const staff = getDailyStaff();
-    if (staff.length === 0) { alert("No staff found working on " + DAY_LABELS[selectedDay]); return; }
+    
+    // Feedback 1: No Staff
+    if (staff.length === 0) { 
+        alert(`No working staff detected for ${DAY_LABELS[selectedDay]}. Please check the Schedule tab to ensure shifts are entered correctly.`); 
+        return; 
+    }
 
     if(!window.confirm(`Auto-Assign will overwrite assignments for ${DAY_LABELS[selectedDay]}. Continue?`)) return;
 
@@ -292,6 +284,7 @@ export default function App() {
     // Clear current day
     staff.forEach(s => delete newAssignments[`${selectedDay}-${s.name}`]);
     const pinned: AssignedTask[] = [];
+    let assignedCount = 0;
 
     // Helper to assign
     const assign = (empName: string, rule: TaskRule) => {
@@ -299,15 +292,22 @@ export default function App() {
         if (!newAssignments[key]) newAssignments[key] = [];
         if (newAssignments[key].some(t => t.id === rule.id)) return;
         newAssignments[key].push({ ...rule, instanceId: Date.now() + Math.random().toString() });
+        assignedCount++;
     };
 
     // Filter DB for today
-    const dayLabel = DAY_LABELS[selectedDay].slice(0, 3); // Mon, Tue...
+    const dayLabel = DAY_LABELS[selectedDay].slice(0, 3); 
     const validRules = taskDB.filter(t => {
         if (t.name.includes("Only") && !t.name.includes(dayLabel)) return false;
         if (t.name.includes(`Excl. ${dayLabel}`)) return false;
         return true;
     });
+    
+    // Feedback 2: No Rules
+    if(validRules.length === 0) {
+        alert("No task rules matched for today. Please add rules in the Rules menu.");
+        return;
+    }
 
     // 1. Pinned Tasks (Shared List)
     validRules.filter(t => PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => pinned.push({ ...t, instanceId: 'pinned' }));
@@ -320,7 +320,6 @@ export default function App() {
 
         if (candidates.length > 0) {
             candidates.sort((a, b) => {
-                // If task is Truck Unload (ON) or Breakdown (EOD), prioritize Spillover staff
                 if (['ON', 'EOD'].includes(t.code)) {
                     if (a.isSpillover && !b.isSpillover) return -1;
                     if (!a.isSpillover && b.isSpillover) return 1;
@@ -331,17 +330,13 @@ export default function App() {
                 const skillIndexA = t.fallbackChain.findIndex(fc => namesMatch(a.name, fc));
                 const skillIndexB = t.fallbackChain.findIndex(fc => namesMatch(b.name, fc));
 
-                // Granular Balance: If loads are roughly equal (within 30 mins), prioritize skill rank (lower index is better)
                 if (Math.abs(loadA - loadB) <= 30) {
                     return skillIndexA - skillIndexB;
                 }
-
-                // Otherwise, prioritize the person with less work
                 return loadA - loadB;
             });
             assign(candidates[0].name, t);
         } else {
-            // Fallback for skilled tasks with no skilled staff working
             const backups = staff.filter(s => 
                 s.role?.toLowerCase().includes('overnight') || 
                 s.role?.toLowerCase().includes('stock') ||
@@ -364,7 +359,6 @@ export default function App() {
         if(category !== 'OFF') shifts[category as keyof typeof shifts].push(s);
     });
 
-    // Assign Shift-based tasks ensuring workload balance
     validRules.filter(t => t.type === 'shift_based').forEach(t => {
         ['Open', 'Mid', 'Close', 'Overnight'].forEach(cat => {
             const group = shifts[cat as keyof typeof shifts];
@@ -379,7 +373,6 @@ export default function App() {
         });
     });
 
-    // Assign General tasks (Round robin based on effort load)
     validRules.filter(t => t.type === 'general' && !PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => {
          const sortedStaff = [...staff].sort((a, b) => {
             const loadA = getWorkerLoad(a.name, newAssignments);
@@ -390,6 +383,13 @@ export default function App() {
     });
 
     setAssignments(newAssignments);
+    
+    // Feedback 3: Success
+    if(assignedCount > 0) {
+        alert(`Successfully distributed ${assignedCount} tasks across ${staff.length} staff members.`);
+    } else {
+        alert("Assignments completed, but no specific tasks were assigned. Check your task rules.");
+    }
   };
 
   // --- Handlers ---
@@ -435,11 +435,11 @@ export default function App() {
       setIsScanning(true);
       try {
           const scannedData = await OCRService.parseSchedule(file);
-          if (scannedData.shifts.length === 0) {
+          if (!scannedData.shifts || scannedData.shifts.length === 0) {
               alert("No shifts found in the image. Please try a clearer image.");
           } else {
               setSchedule(scannedData);
-              alert("Schedule scanned successfully! Please verify the data.");
+              alert("Schedule scanned successfully! Please verify the data on the Schedule tab.");
           }
       } catch (error) {
           console.error(error);
@@ -644,18 +644,18 @@ export default function App() {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
-                                {schedule.shifts.map((shift, idx) => (
+                                {(schedule.shifts || []).map((shift, idx) => (
                                     <tr key={shift.id} className="hover:bg-slate-50/50 transition-colors">
                                         <td className="p-4">
                                             {isEditingSchedule ? (
                                                 <div className="space-y-1">
                                                     <input className="w-full border border-slate-300 rounded px-2 py-1 text-sm font-bold" value={shift.name} onChange={e => {
-                                                        const newShifts = [...schedule.shifts];
+                                                        const newShifts = [...(schedule.shifts || [])];
                                                         newShifts[idx].name = e.target.value;
                                                         setSchedule({...schedule, shifts: newShifts});
                                                     }} />
                                                     <input className="w-full border border-slate-300 rounded px-2 py-1 text-xs text-slate-500" placeholder="Role" value={shift.role} onChange={e => {
-                                                        const newShifts = [...schedule.shifts];
+                                                        const newShifts = [...(schedule.shifts || [])];
                                                         newShifts[idx].role = e.target.value;
                                                         setSchedule({...schedule, shifts: newShifts});
                                                     }} />
@@ -674,7 +674,7 @@ export default function App() {
                                                         className="w-24 text-center text-sm border border-slate-200 rounded py-1 focus:ring-2 ring-indigo-500 outline-none" 
                                                         value={shift[day as DayKey]}
                                                         onChange={e => {
-                                                            const newShifts = [...schedule.shifts];
+                                                            const newShifts = [...(schedule.shifts || [])];
                                                             // @ts-ignore
                                                             newShifts[idx][day] = e.target.value;
                                                             setSchedule({...schedule, shifts: newShifts});
@@ -690,7 +690,7 @@ export default function App() {
                                         {isEditingSchedule && (
                                             <td className="p-4">
                                                 <button onClick={() => {
-                                                     const newShifts = schedule.shifts.filter((_, i) => i !== idx);
+                                                     const newShifts = (schedule.shifts || []).filter((_, i) => i !== idx);
                                                      setSchedule({...schedule, shifts: newShifts});
                                                 }} className="text-slate-300 hover:text-red-500"><Trash2 size={16}/></button>
                                             </td>
@@ -703,7 +703,7 @@ export default function App() {
                     {isEditingSchedule && (
                         <div className="p-4 border-t border-slate-200 bg-slate-50">
                             <button 
-                                onClick={() => setSchedule({...schedule, shifts: [...schedule.shifts, { id: Date.now().toString(), name: "New Staff", role: "Stock", sun: "OFF", mon: "OFF", tue: "OFF", wed: "OFF", thu: "OFF", fri: "OFF", sat: "OFF" }]})}
+                                onClick={() => setSchedule({...schedule, shifts: [...(schedule.shifts || []), { id: Date.now().toString(), name: "New Staff", role: "Stock", sun: "OFF", mon: "OFF", tue: "OFF", wed: "OFF", thu: "OFF", fri: "OFF", sat: "OFF" }]})}
                                 className="w-full py-2 border-2 border-dashed border-slate-300 rounded-lg text-slate-500 font-bold hover:border-indigo-500 hover:text-indigo-600 transition-colors flex items-center justify-center gap-2"
                             >
                                 <Plus size={18}/> Add Staff Row
@@ -721,7 +721,7 @@ export default function App() {
         onClose={() => setShowDBModal(false)} 
         tasks={taskDB} 
         setTasks={setTaskDB}
-        staffNames={schedule.shifts.map(s => s.name)}
+        staffNames={(schedule.shifts || []).map(s => s.name)}
       />
       
       {isScanning && (

@@ -44,19 +44,19 @@ export const OCRService = {
         - Shift times for each day (sun, mon, tue, wed, thu, fri, sat).
         
         CRITICAL FORMATTING RULES FOR TIMES:
-        - Format strictly as "Start-End" (e.g., "7:00-3:00", "12:00-8:00").
-        - If the shift is overnight (e.g. 10pm to 6am), format as "10:00-6:00" or "22:00-6:00".
+        - **PRESERVE AM/PM SUFFIXES**: If the image shows "5:00AM", extract "5:00AM". If it shows "5:00PM", extract "5:00PM".
+        - Do NOT convert to 24-hour format. Keep it as 12-hour with suffix.
+        - Format as "Start-End" (e.g., "7:00AM-3:00PM", "10:00PM-6:00AM").
         - If the employee is off, return "OFF".
         - If the cell says "LOANED", return "LOANED OUT".
-        - Remove "AM"/"PM" suffixes and convert to simple H:MM format, unless ambiguous. 
-        - Example: "5a-1p" becomes "5:00-1:00". "1pm-9pm" becomes "1:00-9:00".
+        - Only if NO suffix is present in the image, return simple H:MM (e.g. "5:00-1:00").
 
         Return ONLY the JSON object matching the schema.
      `;
 
      // Call API
      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-3-pro-preview",
         contents: {
             parts: [filePart, { text: prompt }]
         },
@@ -91,7 +91,19 @@ export const OCRService = {
      
      if (!response.text) throw new Error("Failed to parse schedule");
      
-     const data = JSON.parse(response.text) as ScheduleData;
+     let data: ScheduleData;
+     try {
+         data = JSON.parse(response.text) as ScheduleData;
+     } catch (e) {
+         console.error("JSON Parse Error", e);
+         throw new Error("Failed to parse AI response as JSON");
+     }
+     
+     // Validate shifts array to prevent crashes
+     if (!data.shifts || !Array.isArray(data.shifts)) {
+         console.warn("No shifts array found in AI response, defaulting to empty.");
+         data.shifts = [];
+     }
      
      // Post-process to ensure IDs exist and data is clean
      data.shifts = data.shifts.map((s, i) => ({
