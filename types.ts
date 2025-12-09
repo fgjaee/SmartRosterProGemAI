@@ -15,6 +15,15 @@ export interface Shift {
   isManual?: boolean;
 }
 
+export interface Employee {
+    id: string;
+    name: string;
+    role: string;
+    isActive: boolean;
+    email?: string;
+    phone?: string;
+}
+
 export interface ScheduleData {
   week_period: string;
   shifts: Shift[];
@@ -41,8 +50,10 @@ export interface AssignedTask extends TaskRule {
 export type TaskAssignmentMap = Record<string, AssignedTask[]>;
 
 export interface AppState {
-  activeTab: 'vision' | 'schedule' | 'tasks';
+  activeTab: 'vision' | 'schedule' | 'tasks' | 'team';
   selectedDay: DayKey;
+  isLoading: boolean;
+  isSaving: boolean;
 }
 
 export const DAY_LABELS: Record<DayKey, string> = {

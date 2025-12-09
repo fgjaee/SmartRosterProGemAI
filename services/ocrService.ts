@@ -21,107 +21,102 @@ const fileToGenerativePart = async (file: File) => {
   };
 };
 
+// Helper to strip markdown code blocks if present
+const cleanJsonString = (str: string) => {
+    if (!str) return "";
+    let clean = str.trim();
+    // Remove ```json and ``` wrapping
+    if (clean.startsWith('```json')) {
+        clean = clean.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+    } else if (clean.startsWith('```')) {
+        clean = clean.replace(/^```\s*/, '').replace(/\s*```$/, '');
+    }
+    return clean;
+};
+
 export const OCRService = {
   parseSchedule: async (file: File): Promise<ScheduleData> => {
-     // Initialize Gemini
      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-     
-     // Prepare File
      const filePart = await fileToGenerativePart(file);
 
-     // Define Prompt
+     // Define Prompt with stricter constraints
      const prompt = `
-        You are an intelligent data extraction assistant for a retail roster system. 
-        Analyze this image or PDF of a weekly staff schedule.
-        
-        Extract the following:
-        1. The 'week_period' (e.g., "Nov 30 - Dec 7").
-        2. A list of 'shifts' for each employee found in the roster.
+        Analyze this roster image. Return a JSON object with:
+        1. 'week_period': The date range found (e.g., "Nov 1 - Nov 7").
+        2. 'shifts': An array of objects for each employee row.
 
-        For each employee row, extract:
-        - Name (Format: "Lastname, Firstname" or "Firstname Lastname").
-        - Role (e.g., Lead, Stock, Overnight, Supervisor). If not clearly visible, infer 'Stock' based on context.
-        - Shift times for each day (sun, mon, tue, wed, thu, fri, sat).
-        
-        CRITICAL FORMATTING RULES FOR TIMES:
-        - **PRESERVE AM/PM SUFFIXES**: If the image shows "5:00AM", extract "5:00AM". If it shows "5:00PM", extract "5:00PM".
-        - Do NOT convert to 24-hour format. Keep it as 12-hour with suffix.
-        - Format as "Start-End" (e.g., "7:00AM-3:00PM", "10:00PM-6:00AM").
-        - If the employee is off, return "OFF".
-        - If the cell says "LOANED", return "LOANED OUT".
-        - Only if NO suffix is present in the image, return simple H:MM (e.g. "5:00-1:00").
+        Schema for 'shifts':
+        {
+          "name": "Employee Name",
+          "role": "Job Title (or 'Stock' if unclear)",
+          "sun": "Time Range",
+          "mon": "Time Range",
+          "tue": "Time Range",
+          "wed": "Time Range",
+          "thu": "Time Range",
+          "fri": "Time Range",
+          "sat": "Time Range"
+        }
 
-        Return ONLY the JSON object matching the schema.
+        CRITICAL RULES:
+        - **Format Times Strictly**: "HH:MM(AM/PM)-HH:MM(AM/PM)". Example: "7:00AM-3:00PM".
+        - **Inference**: If only numbers appear (e.g., "7-3"), infer AM/PM based on typical retail shifts (7-3 is usually 7am-3pm). If "2-10", it is 2pm-10pm.
+        - **OFF Days**: If a cell is blank, says "OFF", "X", or "Loan", return "OFF".
+        - **Correction**: Treat 'S' as '5', 'O' as '0' if inside a time range.
+        - **Noise**: Ignore text like "Shift", "Hrs", "Meal". Just extract the time.
+
+        Return ONLY raw JSON. No markdown formatting.
      `;
 
-     // Call API
-     const response = await ai.models.generateContent({
-        model: "gemini-3-pro-preview",
-        contents: {
-            parts: [filePart, { text: prompt }]
-        },
-        config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                    week_period: { type: Type.STRING },
-                    shifts: {
-                        type: Type.ARRAY,
-                        items: {
-                            type: Type.OBJECT,
-                            properties: {
-                                name: { type: Type.STRING },
-                                role: { type: Type.STRING },
-                                sun: { type: Type.STRING },
-                                mon: { type: Type.STRING },
-                                tue: { type: Type.STRING },
-                                wed: { type: Type.STRING },
-                                thu: { type: Type.STRING },
-                                fri: { type: Type.STRING },
-                                sat: { type: Type.STRING },
-                            },
-                            required: ["name", "sun", "mon", "tue", "wed", "thu", "fri", "sat"]
-                        }
-                    }
-                }
-            }
-        }
-     });
-     
-     if (!response.text) throw new Error("Failed to parse schedule");
-     
-     let data: ScheduleData;
      try {
-         data = JSON.parse(response.text) as ScheduleData;
-     } catch (e) {
-         console.error("JSON Parse Error", e);
-         throw new Error("Failed to parse AI response as JSON");
+         const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: {
+                parts: [filePart, { text: prompt }]
+            },
+            config: {
+                responseMimeType: "application/json",
+                // Using loose schema to allow model flexibility, manual validation below
+            }
+         });
+         
+         if (!response.text) throw new Error("AI returned empty response.");
+         
+         const cleanJson = cleanJsonString(response.text);
+         let data: ScheduleData;
+         
+         try {
+             data = JSON.parse(cleanJson) as ScheduleData;
+         } catch (e) {
+             console.error("JSON Parse Error", e);
+             throw new Error("Failed to parse AI response. Try a clearer image.");
+         }
+         
+         // Validation & Defaulting
+         if (!data.shifts || !Array.isArray(data.shifts)) {
+             data.shifts = [];
+         }
+         
+         data.shifts = data.shifts.map((s, i) => ({
+             ...s,
+             id: String(Date.now() + i),
+             role: s.role || "Stock",
+             sun: s.sun || "OFF",
+             mon: s.mon || "OFF",
+             tue: s.tue || "OFF",
+             wed: s.wed || "OFF",
+             thu: s.thu || "OFF",
+             fri: s.fri || "OFF",
+             sat: s.sat || "OFF",
+         }));
+         
+         if (!data.week_period) data.week_period = "New Schedule";
+         
+         return data;
+
+     } catch (err: any) {
+         console.error("OCR Service Error:", err);
+         throw new Error(err.message || "Unknown OCR error");
      }
-     
-     // Validate shifts array to prevent crashes
-     if (!data.shifts || !Array.isArray(data.shifts)) {
-         console.warn("No shifts array found in AI response, defaulting to empty.");
-         data.shifts = [];
-     }
-     
-     // Post-process to ensure IDs exist and data is clean
-     data.shifts = data.shifts.map((s, i) => ({
-         ...s,
-         id: String(Date.now() + i),
-         role: s.role || "Stock",
-         // Ensure fallbacks for missing days
-         sun: s.sun || "OFF",
-         mon: s.mon || "OFF",
-         tue: s.tue || "OFF",
-         wed: s.wed || "OFF",
-         thu: s.thu || "OFF",
-         fri: s.fri || "OFF",
-         sat: s.sat || "OFF",
-     }));
-     
-     if (!data.week_period) data.week_period = "Imported Schedule";
-     
-     return data;
   }
 };

@@ -1,13 +1,14 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Users, Calendar, CheckCircle, Wand2, Printer, 
   Download, Upload, Plus, Trash2, ArrowRight, X, 
-  Menu, RotateCcw, Save, AlertCircle, ScanLine, Loader2, Clock
+  Menu, RotateCcw, Save, AlertCircle, ScanLine, Loader2, Clock, Settings, UserPlus, Briefcase
 } from 'lucide-react';
 
 import { 
   ScheduleData, TaskRule, TaskAssignmentMap, 
-  DayKey, Shift, AssignedTask, DAY_LABELS 
+  DayKey, Shift, AssignedTask, DAY_LABELS, Employee 
 } from './types';
 import { PRIORITY_PINNED_IDS } from './constants';
 import { StorageService } from './services/storageService';
@@ -24,401 +25,260 @@ const getPrevDay = (d: DayKey): DayKey => {
     return days[idx === 0 ? 6 : idx - 1];
 };
 
+// Robust Time Parsing
 const parseTime = (timeStr: string, role: string, isSpillover = false) => {
-    if (!timeStr || timeStr === 'OFF' || timeStr === 'LOANED OUT') return { h: 24, label: 'OFF', category: 'OFF' };
+    if (!timeStr) return { h: 24, label: 'OFF', category: 'OFF' };
     
-    // Normalize string
-    const lower = timeStr.toLowerCase();
-    const parts = lower.replace(/\s/g, '').split('-');
-    if (parts.length < 2) return { h: 24, label: timeStr, category: 'OFF' };
+    // Normalize: remove special chars, extra spaces, upper case
+    const cleanStr = timeStr.replace(/[^a-zA-Z0-9:]/g, '').toUpperCase();
+    
+    // Explicit OFF checks
+    if (['OFF', 'O', '0', 'LOAN', 'LOANED', 'LOANEDOUT', 'X', 'VAC', 'SICK', '-'].includes(cleanStr)) {
+        return { h: 24, label: 'OFF', category: 'OFF' };
+    }
 
-    let startStr = parts[0];
-    let label = parts[0];
-    let category = 'Mid';
+    // Try to find ANY number. If no number, assume OFF (or malformed).
+    // Regex finds the FIRST number sequence, optionally followed by minutes and AM/PM
+    const match = timeStr.match(/(\d{1,2})(?::(\d{2}))?\s*(AM|PM|A|P)?/i);
 
-    const hasAm = startStr.includes('a') || startStr.includes('am');
-    const hasPm = startStr.includes('p') || startStr.includes('pm');
+    if (!match) {
+        return { h: 24, label: timeStr, category: 'OFF' };
+    }
 
-    let start = parseInt(startStr.split(':')[0]);
+    let h = parseInt(match[1]);
+    const m = match[2] || '00';
+    const suffix = match[3] ? match[3].toUpperCase() : null;
 
-    // 1. Explicit Suffix Logic (Highest Accuracy)
-    if (hasAm || hasPm) {
-        if (hasPm && start !== 12) start += 12;
-        if (hasAm && start === 12) start = 0; // 12 AM is 0:00
-    } 
-    // 2. Heuristic Fallback (If no suffix provided)
-    else {
-        // Assume 1-6 is PM unless Overnight or Early Open
-        if (start >= 1 && start <= 6) {
-             if (role?.toLowerCase().includes('overnight') && start <= 4) {
-                 category = 'Overnight';
-                 label += ' AM';
-             } else if (start === 4 || start === 5 || start === 6) {
-                 // Openers / Supervisors often start 4-6 AM
-                 if (role?.toLowerCase().includes('lead') || role?.toLowerCase().includes('open') || role?.toLowerCase().includes('supervisor') || role?.toLowerCase().includes('stock')) {
-                    category = 'Open';
-                    label += ' AM';
-                 } else {
-                    category = 'Mid'; // PM
-                    start += 12;
-                    label += ' PM';
-                 }
+    // Logic to convert 12h -> 24h
+    if (suffix) {
+        if ((suffix.startsWith('P')) && h !== 12) h += 12;
+        if ((suffix.startsWith('A')) && h === 12) h = 0;
+    } else {
+        // Inference without suffix
+        if (h >= 1 && h <= 6) {
+             // 1-4 is usually PM for normal staff, AM for overnight/openers
+             if (role?.toLowerCase().includes('overnight') && h <= 4) {
+                 // AM
              } else {
-                 start += 12;
-                 category = 'Mid';
-                 label += ' PM';
+                 h += 12; // PM
              }
-        } 
-        else if (start >= 7 && start <= 11) {
-            // 7-11. Usually AM.
-            if (role?.toLowerCase().includes('overnight')) {
-                start += 12; 
-                category = 'Overnight';
-                label += ' PM';
-            } else if ((start === 10 || start === 11) && role?.toLowerCase().includes('stock')) {
-                 // Stock starting late is likely night crew
-                 start += 12;
-                 category = 'Overnight';
-                 label += ' PM';
-            } else {
-                category = 'Mid';
-                label += ' AM';
-            }
-        }
-        else if (start === 12) {
-             start = 12;
-             label += ' PM';
-             category = 'Mid';
+        } else if (h === 12) {
+             // 12 is usually PM
         }
     }
 
-    // Determine Category based on 24h start time
-    if (start >= 20 || start <= 3) category = 'Overnight'; // 8pm - 3am starts
-    else if (start >= 4 && start <= 6) category = 'Open';  // 4am - 6am starts
-    else if (start >= 7 && start <= 15) category = 'Mid';  // 7am - 3pm starts
-    else category = 'Close';                               // 4pm - 7pm starts
+    // Categorize
+    let category = 'Mid';
+    if (h >= 20 || h <= 3) category = 'Overnight'; // 8pm - 3am starts
+    else if (h >= 4 && h <= 6) category = 'Open';  // 4am - 6am starts
+    else if (h >= 7 && h <= 15) category = 'Mid';  // 7am - 3pm starts
+    else category = 'Close';                       // 4pm - 7pm starts
 
-    if (isSpillover) {
-        category = 'Overnight';
-        label += ' (Prev)';
-    }
+    if (isSpillover) category = 'Overnight';
 
-    // Clean label for display (ensure AM/PM is correct if we inferred it)
-    if (!hasAm && !hasPm && !label.toUpperCase().match(/(AM|PM)/)) {
-        label = timeStr.split('-')[0]; // Reset to original if parsing failed visually
-    }
+    // Formatting label
+    const displayH = h % 12 === 0 ? 12 : h % 12;
+    const displayAmPm = h >= 12 && h < 24 ? 'PM' : 'AM';
+    const displayLabel = `${displayH}:${m}${displayAmPm}`;
 
-    return { h: start, label, category };
+    return { h, label: isSpillover ? `${displayLabel} (Prev)` : displayLabel, category };
 };
 
-const formatShiftString = (timeStr: string, role: string) => {
-    if (!timeStr || timeStr === 'OFF' || timeStr === 'LOANED OUT') return timeStr;
-    // If it already has AM/PM, trust it (the new OCR model provides this)
-    if (timeStr.toLowerCase().match(/[a-z]/)) return timeStr;
-
-    const parts = timeStr.split('-');
-    if (parts.length < 2) return timeStr;
-
-    const startRaw = parts[0].trim();
-    const endRaw = parts[1].trim();
-
-    // 1. Determine Start 24h
-    const { h: start24 } = parseTime(timeStr, role);
-    
-    // 2. Determine End 24h
-    const endParts = endRaw.split(':');
-    let end12 = parseInt(endParts[0]);
-    if (end12 === 0) end12 = 12; // safety
-    
-    const endMin = endParts[1] || '00';
-
-    // Try candidates: End as AM, End as PM, End next day...
-    const targets = [
-        end12 === 12 ? 0 : end12,        
-        end12 === 12 ? 12 : end12 + 12,  
-        (end12 === 12 ? 0 : end12) + 24,       
-        (end12 === 12 ? 12 : end12 + 12) + 24  
-    ];
-
-    // Find target that gives duration approx 3-14 hours
-    let selectedEnd = -1;
-    for (const t of targets) {
-        const diff = t - start24;
-        if (diff >= 3 && diff <= 16) { 
-            selectedEnd = t;
-            break;
-        }
-    }
-    
-    // Fallback
-    if (selectedEnd === -1) selectedEnd = start24 + 8;
-
-    // 3. Format Output
-    const formatTime = (h24: number, min: string) => {
-        let h = h24 % 24;
-        const ampm = h >= 12 ? 'PM' : 'AM';
-        h = h % 12;
-        if (h === 0) h = 12;
-        return `${h}:${min}${ampm}`;
-    };
-
-    const startMin = startRaw.split(':')[1] || '00';
-    return `${formatTime(start24, startMin)} - ${formatTime(selectedEnd, endMin)}`;
+const formatShiftString = (timeStr: string) => {
+    if (!timeStr || ['OFF', 'LOANED OUT', 'O', 'X'].includes(timeStr.toUpperCase())) return timeStr;
+    // Return as is for editing view, let parseTime handle logic
+    return timeStr; 
 };
 
 const getBadgeColor = (code: string) => {
+    if (code === 'MAN') return 'bg-slate-100 text-slate-700 border-slate-200';
     if (code.includes('ON')) return 'bg-indigo-100 text-indigo-700 border-indigo-200';
     if (code.startsWith('T')) return 'bg-emerald-100 text-emerald-700 border-emerald-200';
-    if (code.startsWith('W')) return 'bg-cyan-100 text-cyan-700 border-cyan-200';
-    if (code === 'PS') return 'bg-purple-100 text-purple-700 border-purple-200';
-    if (code === 'EOD') return 'bg-orange-100 text-orange-700 border-orange-200';
-    if (code === 'ORD') return 'bg-yellow-100 text-yellow-700 border-yellow-200';
-    if (code === 'MAN') return 'bg-slate-100 text-slate-700 border-slate-200';
     return 'bg-gray-100 text-gray-600 border-gray-200';
 };
 
-// --- Name Matching Utility ---
-const normalizeName = (name: string) => name.toLowerCase().replace(/[^a-z\s]/g, '');
-
 const namesMatch = (n1: string, n2: string) => {
     if (!n1 || !n2) return false;
-    const norm1 = normalizeName(n1);
-    const norm2 = normalizeName(n2);
-    if (norm1 === norm2) return true;
-
-    const parts1 = norm1.split(/\s+/).filter(x => x.length > 0);
-    const parts2 = norm2.split(/\s+/).filter(x => x.length > 0);
-
-    if (parts1.length >= 2 && parts2.length >= 2) {
-        const p1InP2 = parts1.every(p => parts2.includes(p));
-        const p2InP1 = parts2.every(p => parts1.includes(p));
-        if (p1InP2 || p2InP1) return true;
-    }
-
-    if (norm1.includes(norm2) || norm2.includes(norm1)) return true;
-
+    const clean = (s: string) => s.toLowerCase().replace(/[^a-z]/g, '');
+    const s1 = clean(n1);
+    const s2 = clean(n2);
+    if(s1.includes(s2) || s2.includes(s1)) return true;
     return false;
 };
 
 export default function App() {
-  // --- State ---
-  const [activeTab, setActiveTab] = useState<'schedule' | 'tasks'>('tasks');
+  const [activeTab, setActiveTab] = useState<'schedule' | 'tasks' | 'team'>('tasks');
   const [selectedDay, setSelectedDay] = useState<DayKey>('fri');
-  const [schedule, setSchedule] = useState<ScheduleData>(StorageService.getSchedule());
-  const [taskDB, setTaskDB] = useState<TaskRule[]>(StorageService.getTaskDB());
-  const [assignments, setAssignments] = useState<TaskAssignmentMap>(StorageService.getAssignments());
   
+  // Data States
+  const [schedule, setSchedule] = useState<ScheduleData | null>(null);
+  const [taskDB, setTaskDB] = useState<TaskRule[]>([]);
+  const [assignments, setAssignments] = useState<TaskAssignmentMap>({});
+  const [team, setTeam] = useState<Employee[]>([]);
+
+  // UI States
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
   const [showDBModal, setShowDBModal] = useState(false);
   const [isEditingSchedule, setIsEditingSchedule] = useState(false);
   const [manualTaskInput, setManualTaskInput] = useState<{emp: string, text: string} | null>(null);
-  
   const [isScanning, setIsScanning] = useState(false);
   const scanInputRef = useRef<HTMLInputElement>(null);
 
-  // --- Effects ---
-  useEffect(() => StorageService.saveSchedule(schedule), [schedule]);
-  useEffect(() => StorageService.saveTaskDB(taskDB), [taskDB]);
-  useEffect(() => StorageService.saveAssignments(assignments), [assignments]);
+  // Initial Load
+  useEffect(() => {
+    const loadData = async () => {
+        setIsLoading(true);
+        try {
+            const [s, t, a, tm] = await Promise.all([
+                StorageService.getSchedule(),
+                StorageService.getTaskDB(),
+                StorageService.getAssignments(),
+                StorageService.getTeam()
+            ]);
+            setSchedule(s);
+            setTaskDB(t);
+            setAssignments(a);
+            setTeam(tm);
+        } catch (e) {
+            console.error("Failed to load data", e);
+            alert("Error loading data. Please check console.");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+    loadData();
+  }, []);
 
-  // --- Helpers ---
+  // Autosave Effects (Debounced)
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const saveData = (key: string, fn: () => Promise<void>) => {
+      setIsSaving(true);
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(async () => {
+          try {
+            await fn();
+          } catch(e) { console.error("Save failed", e); }
+          finally { setIsSaving(false); }
+      }, 1000);
+  };
+
+  useEffect(() => { if (schedule) saveData('sched', () => StorageService.saveSchedule(schedule)); }, [schedule]);
+  useEffect(() => { if (taskDB.length) saveData('taskdb', () => StorageService.saveTaskDB(taskDB)); }, [taskDB]);
+  useEffect(() => { if (Object.keys(assignments).length) saveData('assign', () => StorageService.saveAssignments(assignments)); }, [assignments]);
+  useEffect(() => { if (team.length) saveData('team', () => StorageService.saveTeam(team)); }, [team]);
+
   const getDailyStaff = useCallback(() => {
-    const shifts = schedule?.shifts || [];
+    if (!schedule) return [];
+    const shifts = schedule.shifts || [];
+    // Current Day
     const todayStaff = shifts.map(s => {
         const t = s[selectedDay];
-        if (!t || t === 'OFF' || t === 'LOANED OUT') return null;
+        if (!t) return null;
+        const { category } = parseTime(t, s.role);
+        if (category === 'OFF') return null;
         return { ...s, activeTime: t, isSpillover: false };
     }).filter(s => s !== null);
 
-    // Check previous day for overnight shifts
+    // Spillover (Overnight from prev day)
     const prevDay = getPrevDay(selectedDay);
     const spilloverStaff = shifts.map(s => {
         const t = s[prevDay];
-        if (!t || t === 'OFF' || t === 'LOANED OUT') return null;
-        
-        const { category } = parseTime(t, s.role);
+        if (!t) return null;
+        const { category } = parseTime(t, s.role, true);
         if (category === 'Overnight') {
             return { ...s, activeTime: t, isSpillover: true };
         }
         return null;
     }).filter(s => s !== null);
 
-    return [...spilloverStaff, ...todayStaff] as (Shift & { activeTime: string, isSpillover: boolean })[];
+    // Merge & Dedupe
+    const uniqueMap = new Map();
+    [...spilloverStaff, ...todayStaff].forEach(item => {
+        if (item && !uniqueMap.has(item.id)) uniqueMap.set(item.id, item);
+    });
+    return Array.from(uniqueMap.values()) as (Shift & { activeTime: string, isSpillover: boolean })[];
   }, [schedule, selectedDay]);
-
-  const getStaffTasks = (empName: string) => {
-    const key = `${selectedDay}-${empName}`;
-    return assignments[key] || [];
-  };
 
   const getWorkerLoad = (empName: string, currentAssignments: TaskAssignmentMap) => {
     const key = `${selectedDay}-${empName}`;
-    const tasks = currentAssignments[key] || [];
-    return tasks.reduce((acc, t) => acc + (t.effort || 30), 0);
+    return (currentAssignments[key] || []).reduce((acc, t) => acc + (t.effort || 30), 0);
   };
 
-  const sortTasks = (tasks: AssignedTask[]) => {
-      const getPriority = (t: AssignedTask) => {
-          if (t.code.startsWith('T') || t.code.startsWith('W') || t.code === '9AM') return 1;
-          if (t.code === 'ORD') return 2;
-          if (t.code === 'ON') return 3;
-          if (t.code === 'PS') return 4;
-          if (t.code === 'MAN') return 99;
-          return 50;
-      };
-      return [...tasks].sort((a, b) => getPriority(a) - getPriority(b));
-  };
-
-  // --- Core Algorithm: Auto Distribute ---
   const autoDistribute = () => {
     const staff = getDailyStaff();
-    
-    // Feedback 1: No Staff
     if (staff.length === 0) { 
-        alert(`No working staff detected for ${DAY_LABELS[selectedDay]}. Please check the Schedule tab to ensure shifts are entered correctly.`); 
+        alert(`No working staff detected for ${DAY_LABELS[selectedDay]}. Check your schedule entries.`); 
         return; 
     }
-
-    if(!window.confirm(`Auto-Assign will overwrite assignments for ${DAY_LABELS[selectedDay]}. Continue?`)) return;
+    if(!window.confirm(`Overwrite assignments for ${DAY_LABELS[selectedDay]}?`)) return;
 
     const newAssignments: TaskAssignmentMap = { ...assignments };
-    // Clear current day
     staff.forEach(s => delete newAssignments[`${selectedDay}-${s.name}`]);
-    const pinned: AssignedTask[] = [];
     let assignedCount = 0;
 
-    // Helper to assign
     const assign = (empName: string, rule: TaskRule) => {
         const key = `${selectedDay}-${empName}`;
         if (!newAssignments[key]) newAssignments[key] = [];
         if (newAssignments[key].some(t => t.id === rule.id)) return;
-        newAssignments[key].push({ ...rule, instanceId: Date.now() + Math.random().toString() });
+        newAssignments[key].push({ ...rule, instanceId: Math.random().toString(36).substr(2, 9) });
         assignedCount++;
     };
 
-    // Filter DB for today
-    const dayLabel = DAY_LABELS[selectedDay].slice(0, 3); 
+    const dayLabel = DAY_LABELS[selectedDay].slice(0, 3).toUpperCase();
     const validRules = taskDB.filter(t => {
-        if (t.name.includes("Only") && !t.name.includes(dayLabel)) return false;
-        if (t.name.includes(`Excl. ${dayLabel}`)) return false;
+        const n = t.name.toUpperCase();
+        if (n.includes("ONLY") && !n.includes(dayLabel)) return false;
+        if (n.includes(`EXCL. ${dayLabel}`)) return false;
         return true;
     });
-    
-    // Feedback 2: No Rules
-    if(validRules.length === 0) {
-        alert("No task rules matched for today. Please add rules in the Rules menu.");
-        return;
-    }
 
-    // 1. Pinned Tasks (Shared List)
-    validRules.filter(t => PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => pinned.push({ ...t, instanceId: 'pinned' }));
-
-    // 2. Skilled Logic
+    // 1. Skilled Tasks
     validRules.filter(t => t.type === 'skilled' && !PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => {
-        const candidates = staff.filter(s => 
-            t.fallbackChain.some(fcName => namesMatch(s.name, fcName))
-        );
-
-        if (candidates.length > 0) {
-            candidates.sort((a, b) => {
-                if (['ON', 'EOD'].includes(t.code)) {
-                    if (a.isSpillover && !b.isSpillover) return -1;
-                    if (!a.isSpillover && b.isSpillover) return 1;
-                }
-
-                const loadA = getWorkerLoad(a.name, newAssignments);
-                const loadB = getWorkerLoad(b.name, newAssignments);
-                const skillIndexA = t.fallbackChain.findIndex(fc => namesMatch(a.name, fc));
-                const skillIndexB = t.fallbackChain.findIndex(fc => namesMatch(b.name, fc));
-
-                if (Math.abs(loadA - loadB) <= 30) {
-                    return skillIndexA - skillIndexB;
-                }
-                return loadA - loadB;
-            });
-            assign(candidates[0].name, t);
+        const matches = staff.filter(s => t.fallbackChain.some(fc => namesMatch(s.name, fc)));
+        if (matches.length > 0) {
+            matches.sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
+            assign(matches[0].name, t);
         } else {
-            const backups = staff.filter(s => 
-                s.role?.toLowerCase().includes('overnight') || 
-                s.role?.toLowerCase().includes('stock') ||
-                s.role?.toLowerCase().includes('lead')
-            );
-            const targetGroup = backups.length ? backups : staff;
-            targetGroup.sort((a, b) => {
-                 const loadA = getWorkerLoad(a.name, newAssignments);
-                 const loadB = getWorkerLoad(b.name, newAssignments);
-                 return loadA - loadB;
-            });
-            assign(targetGroup[0].name, t);
+            const anyStaff = [...staff].sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
+            if(anyStaff.length > 0) assign(anyStaff[0].name, t);
         }
     });
 
-    // 3. Shift Based & General
-    const shifts = { 'Open': [] as Shift[], 'Mid': [] as Shift[], 'Close': [] as Shift[], 'Overnight': [] as Shift[] };
+    // 2. Shift Based
+    const shifts = { 'Open': [] as any[], 'Mid': [] as any[], 'Close': [] as any[], 'Overnight': [] as any[] };
     staff.forEach(s => {
         const { category } = parseTime(s.activeTime, s.role, s.isSpillover);
         if(category !== 'OFF') shifts[category as keyof typeof shifts].push(s);
     });
-
     validRules.filter(t => t.type === 'shift_based').forEach(t => {
         ['Open', 'Mid', 'Close', 'Overnight'].forEach(cat => {
             const group = shifts[cat as keyof typeof shifts];
             if(group.length > 0) {
-                 const avail = [...group].sort((a,b) => {
-                    const loadA = getWorkerLoad(a.name, newAssignments);
-                    const loadB = getWorkerLoad(b.name, newAssignments);
-                    return loadA - loadB;
-                 });
-                 if(avail.length) assign(avail[0].name, { ...t, name: `${t.name} (${cat})` });
+                 group.sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
+                 assign(group[0].name, { ...t, name: `${t.name} (${cat})` });
             }
         });
     });
 
+    // 3. General Tasks
     validRules.filter(t => t.type === 'general' && !PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => {
-         const sortedStaff = [...staff].sort((a, b) => {
-            const loadA = getWorkerLoad(a.name, newAssignments);
-            const loadB = getWorkerLoad(b.name, newAssignments);
-            return loadA - loadB;
-         });
-         assign(sortedStaff[0].name, t);
+         const sorted = [...staff].sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
+         if(sorted.length > 0) assign(sorted[0].name, t);
+    });
+
+    // 4. Fill Gaps
+    staff.forEach(s => {
+        const load = getWorkerLoad(s.name, newAssignments);
+        if (load === 0) {
+            assign(s.name, { 
+                id: 9000 + Math.floor(Math.random()*1000), code: 'GEN', name: 'General Department Support', type: 'general', fallbackChain: [], effort: 60 
+            });
+        }
     });
 
     setAssignments(newAssignments);
-    
-    // Feedback 3: Success
-    if(assignedCount > 0) {
-        alert(`Successfully distributed ${assignedCount} tasks across ${staff.length} staff members.`);
-    } else {
-        alert("Assignments completed, but no specific tasks were assigned. Check your task rules.");
-    }
-  };
-
-  // --- Handlers ---
-  const handleAddManualTask = () => {
-      if(!manualTaskInput || !manualTaskInput.text) return;
-      const key = `${selectedDay}-${manualTaskInput.emp}`;
-      const newTask: AssignedTask = {
-          id: 9999, code: 'MAN', name: manualTaskInput.text, type: 'manual', fallbackChain: [], instanceId: Date.now().toString(), effort: 30
-      };
-      setAssignments(prev => ({
-          ...prev,
-          [key]: [...(prev[key] || []), newTask]
-      }));
-      setManualTaskInput(null);
-  };
-
-  const handleDeleteTask = (empName: string, instanceId: string) => {
-      const key = `${selectedDay}-${empName}`;
-      setAssignments(prev => ({
-          ...prev,
-          [key]: prev[key].filter(t => t.instanceId !== instanceId)
-      }));
-  };
-
-  const handleClearDay = () => {
-      if(!confirm("Clear all tasks for this day?")) return;
-      const newAsg = {...assignments};
-      getDailyStaff().forEach(s => delete newAsg[`${selectedDay}-${s.name}`]);
-      setAssignments(newAsg);
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -431,24 +291,67 @@ export default function App() {
   const handleScanFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
-
       setIsScanning(true);
       try {
           const scannedData = await OCRService.parseSchedule(file);
-          if (!scannedData.shifts || scannedData.shifts.length === 0) {
-              alert("No shifts found in the image. Please try a clearer image.");
-          } else {
-              setSchedule(scannedData);
-              alert("Schedule scanned successfully! Please verify the data on the Schedule tab.");
-          }
-      } catch (error) {
-          console.error(error);
-          alert("Failed to scan schedule. Ensure the image is clear and try again.");
+          setSchedule(scannedData);
+          alert("Schedule updated from image. Please verify rows.");
+      } catch (error: any) {
+          alert("Scan failed: " + error.message);
       } finally {
           setIsScanning(false);
-          if (scanInputRef.current) scanInputRef.current.value = '';
+          if(scanInputRef.current) scanInputRef.current.value = '';
       }
   };
+
+  const handleClearDay = () => {
+    if(!confirm("Clear all tasks for this day?")) return;
+    const newAsg = {...assignments};
+    getDailyStaff().forEach(s => delete newAsg[`${selectedDay}-${s.name}`]);
+    setAssignments(newAsg);
+  };
+
+  const handleDeleteTask = (empName: string, instanceId: string) => {
+    const key = `${selectedDay}-${empName}`;
+    setAssignments(prev => ({ ...prev, [key]: prev[key].filter(t => t.instanceId !== instanceId) }));
+  };
+
+  const handleAddManualTask = () => {
+      if(!manualTaskInput || !manualTaskInput.text) return;
+      const key = `${selectedDay}-${manualTaskInput.emp}`;
+      setAssignments(prev => ({
+          ...prev,
+          [key]: [...(prev[key] || []), {
+              id: 9999, code: 'MAN', name: manualTaskInput.text, type: 'manual', fallbackChain: [], instanceId: Date.now().toString(), effort: 30
+          }]
+      }));
+      setManualTaskInput(null);
+  };
+
+  const handleImportTeamToSchedule = () => {
+      if(!schedule) return;
+      const existingNames = new Set(schedule.shifts.map(s => s.name));
+      const newShifts: Shift[] = team.filter(t => t.isActive && !existingNames.has(t.name)).map(t => ({
+          id: t.id, name: t.name, role: t.role,
+          sun: "OFF", mon: "OFF", tue: "OFF", wed: "OFF", thu: "OFF", fri: "OFF", sat: "OFF"
+      }));
+      
+      if(newShifts.length === 0) {
+          alert("No new active team members to add.");
+          return;
+      }
+      setSchedule({ ...schedule, shifts: [...schedule.shifts, ...newShifts] });
+      alert(`Added ${newShifts.length} team members to schedule.`);
+  };
+
+  if (isLoading || !schedule) {
+      return (
+          <div className="h-screen w-full flex flex-col items-center justify-center bg-slate-100 text-slate-500 gap-4">
+              <Loader2 size={48} className="animate-spin text-indigo-600"/>
+              <p className="font-medium animate-pulse">Connecting to database...</p>
+          </div>
+      );
+  }
 
   return (
     <div className="flex flex-col h-screen bg-slate-100 font-sans text-slate-900">
@@ -458,7 +361,10 @@ export default function App() {
              <CheckCircle className="w-6 h-6 text-white" />
            </div>
            <div>
-               <h1 className="font-bold text-lg leading-tight">SmartRoster Pro</h1>
+               <div className="flex items-center gap-2">
+                   <h1 className="font-bold text-lg leading-tight">SmartRoster Pro</h1>
+                   {isSaving && <Loader2 size={12} className="animate-spin text-indigo-400"/>}
+               </div>
                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Manager Dashboard</div>
            </div>
         </div>
@@ -466,10 +372,11 @@ export default function App() {
            <div className="flex bg-slate-800 rounded-lg p-1">
              <button onClick={()=>setActiveTab('tasks')} className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${activeTab==='tasks'?'bg-slate-700 text-white shadow':'text-slate-400 hover:text-white'}`}>Worklists</button>
              <button onClick={()=>setActiveTab('schedule')} className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${activeTab==='schedule'?'bg-slate-700 text-white shadow':'text-slate-400 hover:text-white'}`}>Schedule</button>
+             <button onClick={()=>setActiveTab('team')} className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${activeTab==='team'?'bg-slate-700 text-white shadow':'text-slate-400 hover:text-white'}`}>Team</button>
            </div>
            <div className="h-6 w-px bg-slate-700 mx-2"></div>
-           <button onClick={StorageService.exportData} title="Backup Data" className="text-slate-400 hover:text-white"><Download size={20}/></button>
-           <label className="text-slate-400 hover:text-white cursor-pointer" title="Import Data">
+           <button onClick={StorageService.exportData} title="Backup" className="text-slate-400 hover:text-white"><Download size={20}/></button>
+           <label className="text-slate-400 hover:text-white cursor-pointer" title="Import">
               <Upload size={20}/>
               <input type="file" className="hidden" onChange={handleFileUpload} accept=".json"/>
            </label>
@@ -527,7 +434,10 @@ export default function App() {
 
                     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 print:grid-cols-2 print:gap-8">
                         {getDailyStaff().map(staff => {
-                            const staffTasks = sortTasks(getStaffTasks(staff.name));
+                            const tasks = (assignments[`${selectedDay}-${staff.name}`] || []).sort((a,b) => {
+                                const score = (t: AssignedTask) => t.type === 'skilled' ? 1 : t.code === 'MAN' ? 5 : 3;
+                                return score(a) - score(b);
+                            });
                             const { label, category } = parseTime(staff.activeTime, staff.role, staff.isSpillover);
                             const totalEffort = getWorkerLoad(staff.name, assignments);
                             const estimatedHours = (totalEffort / 60).toFixed(1);
@@ -544,7 +454,7 @@ export default function App() {
                                         </div>
                                         <div className="flex flex-col items-end print:hidden">
                                             <div className="h-8 w-8 bg-indigo-100 text-indigo-700 rounded-full flex items-center justify-center font-bold text-sm mb-1">
-                                                {staffTasks.length}
+                                                {tasks.length}
                                             </div>
                                             <div className="text-[10px] font-bold text-slate-400 flex items-center gap-1">
                                                 <Clock size={10}/> ~{estimatedHours}h
@@ -552,14 +462,14 @@ export default function App() {
                                         </div>
                                     </div>
                                     <div className="p-2 min-h-[150px]">
-                                        {staffTasks.length === 0 ? (
+                                        {tasks.length === 0 ? (
                                             <div className="h-full flex flex-col items-center justify-center text-slate-300 py-8 print:hidden">
                                                 <AlertCircle size={32} className="mb-2 opacity-50"/>
                                                 <span className="text-xs font-medium">No tasks assigned</span>
                                             </div>
                                         ) : (
                                             <ul className="space-y-1">
-                                                {staffTasks.map((t, idx) => (
+                                                {tasks.map((t) => (
                                                     <li key={t.instanceId} className="group flex items-start p-2 rounded hover:bg-slate-50 border border-transparent hover:border-indigo-100 transition-colors">
                                                         <div className="print:hidden mr-2 mt-0.5">
                                                             <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${getBadgeColor(t.code)}`}>{t.code}</span>
@@ -569,7 +479,6 @@ export default function App() {
                                                         </div>
                                                         <div className="flex-1">
                                                             <div className="text-sm font-medium text-slate-700 leading-snug">{cleanTaskName(t.name)}</div>
-                                                            {t.effort && <div className="text-[10px] text-slate-400 font-medium print:hidden">{t.effort} mins</div>}
                                                         </div>
                                                         <button 
                                                             onClick={() => handleDeleteTask(staff.name, t.instanceId)}
@@ -682,7 +591,7 @@ export default function App() {
                                                     />
                                                 ) : (
                                                     <span className={`text-xs font-medium px-2 py-1 rounded whitespace-nowrap ${shift[day as DayKey] === 'OFF' ? 'text-slate-300 bg-slate-50' : 'text-slate-700 bg-white border border-slate-200'}`}>
-                                                        {formatShiftString(shift[day as DayKey], shift.role)}
+                                                        {formatShiftString(shift[day as DayKey])}
                                                     </span>
                                                 )}
                                             </td>
@@ -701,15 +610,77 @@ export default function App() {
                         </table>
                     </div>
                     {isEditingSchedule && (
-                        <div className="p-4 border-t border-slate-200 bg-slate-50">
+                        <div className="p-4 border-t border-slate-200 bg-slate-50 flex gap-2">
                             <button 
                                 onClick={() => setSchedule({...schedule, shifts: [...(schedule.shifts || []), { id: Date.now().toString(), name: "New Staff", role: "Stock", sun: "OFF", mon: "OFF", tue: "OFF", wed: "OFF", thu: "OFF", fri: "OFF", sat: "OFF" }]})}
-                                className="w-full py-2 border-2 border-dashed border-slate-300 rounded-lg text-slate-500 font-bold hover:border-indigo-500 hover:text-indigo-600 transition-colors flex items-center justify-center gap-2"
+                                className="flex-1 py-2 border-2 border-dashed border-slate-300 rounded-lg text-slate-500 font-bold hover:border-indigo-500 hover:text-indigo-600 transition-colors flex items-center justify-center gap-2"
                             >
                                 <Plus size={18}/> Add Staff Row
                             </button>
+                             <button 
+                                onClick={handleImportTeamToSchedule}
+                                className="flex-1 py-2 border-2 border-dashed border-slate-300 rounded-lg text-slate-500 font-bold hover:border-indigo-500 hover:text-indigo-600 transition-colors flex items-center justify-center gap-2"
+                            >
+                                <Briefcase size={18}/> Add From Team Database
+                            </button>
                         </div>
                     )}
+                </div>
+            </div>
+        )}
+
+        {activeTab === 'team' && (
+            <div className="flex-1 overflow-auto p-8 bg-slate-50 flex justify-center">
+                <div className="w-full max-w-4xl bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col">
+                    <div className="p-6 border-b border-slate-200 flex justify-between items-center bg-white rounded-t-2xl">
+                        <div>
+                            <h2 className="text-xl font-bold text-slate-800">Team Database</h2>
+                            <p className="text-slate-500 text-sm">Manage global list of employees available for scheduling.</p>
+                        </div>
+                        <button onClick={() => setTeam([...team, { id: Date.now().toString(), name: 'New Employee', role: 'Associate', isActive: true }])} className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-indigo-700 shadow-md">
+                            <UserPlus size={16}/> Add Employee
+                        </button>
+                    </div>
+                    <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {team.map(member => (
+                            <div key={member.id} className={`p-4 rounded-xl border-2 flex justify-between items-start ${member.isActive ? 'border-slate-200 bg-white' : 'border-slate-100 bg-slate-50 opacity-70'}`}>
+                                <div className="flex-1">
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${member.isActive ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-200 text-slate-500'}`}>
+                                            {member.name.charAt(0)}
+                                        </div>
+                                        <input 
+                                            className="font-bold text-slate-800 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-indigo-500 outline-none transition-colors"
+                                            value={member.name}
+                                            onChange={e => setTeam(team.map(t => t.id === member.id ? { ...t, name: e.target.value } : t))}
+                                        />
+                                    </div>
+                                    <div className="flex items-center gap-2 text-sm text-slate-500 pl-10">
+                                        <Briefcase size={14}/>
+                                        <input 
+                                            className="bg-transparent border-b border-transparent hover:border-slate-300 focus:border-indigo-500 outline-none w-32"
+                                            value={member.role}
+                                            onChange={e => setTeam(team.map(t => t.id === member.id ? { ...t, role: e.target.value } : t))}
+                                        />
+                                    </div>
+                                </div>
+                                <div className="flex flex-col gap-2">
+                                     <button 
+                                        onClick={() => setTeam(team.map(t => t.id === member.id ? { ...t, isActive: !t.isActive } : t))}
+                                        className={`px-3 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${member.isActive ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-slate-200 text-slate-500 hover:bg-slate-300'}`}
+                                     >
+                                         {member.isActive ? 'Active' : 'Inactive'}
+                                     </button>
+                                     <button 
+                                        onClick={() => confirm("Delete employee completely?") && setTeam(team.filter(t => t.id !== member.id))}
+                                        className="p-1.5 text-slate-300 hover:text-red-500 self-end"
+                                     >
+                                         <Trash2 size={16}/>
+                                     </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
                 </div>
             </div>
         )}
@@ -721,7 +692,7 @@ export default function App() {
         onClose={() => setShowDBModal(false)} 
         tasks={taskDB} 
         setTasks={setTaskDB}
-        staffNames={(schedule.shifts || []).map(s => s.name)}
+        staffNames={(schedule?.shifts || []).map(s => s.name)}
       />
       
       {isScanning && (

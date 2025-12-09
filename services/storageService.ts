@@ -1,48 +1,81 @@
-import { ScheduleData, TaskRule, TaskAssignmentMap, INITIAL_SCHEDULE } from "../types";
+
+import { ScheduleData, TaskRule, TaskAssignmentMap, INITIAL_SCHEDULE, Employee } from "../types";
 import { DEFAULT_TASK_DB } from "../constants";
 
 // Updated version keys to force refresh of data structure
 const KEYS = {
-  SCHEDULE: 'smartRoster_schedule_v4',
-  TASK_DB: 'smartRoster_taskDB_v4',
-  ASSIGNMENTS: 'smartRoster_assignments_v4',
+  SCHEDULE: 'smartRoster_schedule_v5',
+  TASK_DB: 'smartRoster_taskDB_v5',
+  ASSIGNMENTS: 'smartRoster_assignments_v5',
+  TEAM: 'smartRoster_team_v5',
 };
 
+// Simulate network delay
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 export const StorageService = {
-  getSchedule: (): ScheduleData => {
+  getSchedule: async (): Promise<ScheduleData> => {
+    await delay(300);
     const data = localStorage.getItem(KEYS.SCHEDULE);
     return data ? JSON.parse(data) : INITIAL_SCHEDULE;
   },
 
-  saveSchedule: (data: ScheduleData) => {
+  saveSchedule: async (data: ScheduleData): Promise<void> => {
+    await delay(300);
     localStorage.setItem(KEYS.SCHEDULE, JSON.stringify(data));
   },
 
-  getTaskDB: (): TaskRule[] => {
+  getTaskDB: async (): Promise<TaskRule[]> => {
+    await delay(300);
     const data = localStorage.getItem(KEYS.TASK_DB);
     // If no data found, return the full new default DB
     return data ? JSON.parse(data) : DEFAULT_TASK_DB;
   },
 
-  saveTaskDB: (data: TaskRule[]) => {
+  saveTaskDB: async (data: TaskRule[]): Promise<void> => {
+    await delay(300);
     localStorage.setItem(KEYS.TASK_DB, JSON.stringify(data));
   },
 
-  getAssignments: (): TaskAssignmentMap => {
+  getAssignments: async (): Promise<TaskAssignmentMap> => {
+    await delay(300);
     const data = localStorage.getItem(KEYS.ASSIGNMENTS);
     return data ? JSON.parse(data) : {};
   },
 
-  saveAssignments: (data: TaskAssignmentMap) => {
+  saveAssignments: async (data: TaskAssignmentMap): Promise<void> => {
+    await delay(200); // Faster save for assignments as they change often
     localStorage.setItem(KEYS.ASSIGNMENTS, JSON.stringify(data));
   },
 
+  // --- Team / Employee Management ---
+  getTeam: async (): Promise<Employee[]> => {
+      await delay(300);
+      const data = localStorage.getItem(KEYS.TEAM);
+      if(data) return JSON.parse(data);
+      
+      // Seed from initial schedule if empty
+      const seed: Employee[] = INITIAL_SCHEDULE.shifts.map(s => ({
+          id: s.id,
+          name: s.name,
+          role: s.role,
+          isActive: true
+      }));
+      return seed;
+  },
+
+  saveTeam: async (data: Employee[]): Promise<void> => {
+      await delay(300);
+      localStorage.setItem(KEYS.TEAM, JSON.stringify(data));
+  },
+
   // Export full backup
-  exportData: () => {
+  exportData: async () => {
     const exportObj = {
-      schedule: StorageService.getSchedule(),
-      taskDB: StorageService.getTaskDB(),
-      assignments: StorageService.getAssignments(),
+      schedule: localStorage.getItem(KEYS.SCHEDULE) ? JSON.parse(localStorage.getItem(KEYS.SCHEDULE)!) : INITIAL_SCHEDULE,
+      taskDB: localStorage.getItem(KEYS.TASK_DB) ? JSON.parse(localStorage.getItem(KEYS.TASK_DB)!) : DEFAULT_TASK_DB,
+      assignments: localStorage.getItem(KEYS.ASSIGNMENTS) ? JSON.parse(localStorage.getItem(KEYS.ASSIGNMENTS)!) : {},
+      team: localStorage.getItem(KEYS.TEAM) ? JSON.parse(localStorage.getItem(KEYS.TEAM)!) : [],
       timestamp: new Date().toISOString()
     };
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportObj));
@@ -64,6 +97,7 @@ export const StorageService = {
           if (json.schedule) localStorage.setItem(KEYS.SCHEDULE, JSON.stringify(json.schedule));
           if (json.taskDB) localStorage.setItem(KEYS.TASK_DB, JSON.stringify(json.taskDB));
           if (json.assignments) localStorage.setItem(KEYS.ASSIGNMENTS, JSON.stringify(json.assignments));
+          if (json.team) localStorage.setItem(KEYS.TEAM, JSON.stringify(json.team));
           resolve(true);
         } catch (error) {
           console.error("Import failed", error);
