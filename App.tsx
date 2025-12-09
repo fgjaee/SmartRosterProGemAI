@@ -106,6 +106,15 @@ const namesMatch = (n1: string, n2: string) => {
     return false;
 };
 
+const normalizeTaskRules = (rules: TaskRule[]) => {
+    return rules.map(task => ({
+        ...task,
+        type: task.type || 'general',
+        fallbackChain: Array.isArray(task.fallbackChain) ? task.fallbackChain : [],
+        effort: task.effort ?? 30,
+    }));
+};
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'schedule' | 'tasks' | 'team'>('tasks');
   const [selectedDay, setSelectedDay] = useState<DayKey>('fri');
@@ -115,6 +124,10 @@ export default function App() {
   const [taskDB, setTaskDB] = useState<TaskRule[]>([]);
   const [assignments, setAssignments] = useState<TaskAssignmentMap>({});
   const [team, setTeam] = useState<Employee[]>([]);
+
+  const updateTaskDB = useCallback((rules: TaskRule[]) => {
+      setTaskDB(normalizeTaskRules(rules));
+  }, []);
 
   // UI States
   const [isLoading, setIsLoading] = useState(true);
@@ -137,7 +150,7 @@ export default function App() {
                 StorageService.getTeam()
             ]);
             setSchedule(s);
-            setTaskDB(t);
+            updateTaskDB(t);
             setAssignments(a);
             setTeam(tm);
         } catch (e) {
@@ -687,11 +700,11 @@ export default function App() {
 
       </main>
 
-      <TaskDBModal 
-        isOpen={showDBModal} 
-        onClose={() => setShowDBModal(false)} 
-        tasks={taskDB} 
-        setTasks={setTaskDB}
+      <TaskDBModal
+        isOpen={showDBModal}
+        onClose={() => setShowDBModal(false)}
+        tasks={taskDB}
+        setTasks={updateTaskDB}
         staffNames={(schedule?.shifts || []).map(s => s.name)}
       />
       
