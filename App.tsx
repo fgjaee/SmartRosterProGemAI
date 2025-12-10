@@ -215,14 +215,27 @@ export default function App() {
   };
 
   const autoDistribute = () => {
+    console.group("Auto Distribute Debug Log");
+    console.log("Starting Auto Distribute...");
+    console.log("Selected Day:", selectedDay);
+
     try {
         const staff = getDailyStaff();
+        console.log("Detected Working Staff:", staff.length);
+        console.table(staff.map(s => ({ name: s.name, role: s.role, time: s.activeTime })));
+
         if (staff.length === 0) { 
+            console.error("No staff found. Aborting.");
             alert(`No working staff detected for ${DAY_LABELS[selectedDay]}. Please check the schedule to ensure shifts are entered correctly.`); 
+            console.groupEnd();
             return; 
         }
         
-        if(!window.confirm(`Auto-assign tasks for ${DAY_LABELS[selectedDay]}? This will overwrite current assignments.`)) return;
+        if(!window.confirm(`Auto-assign tasks for ${DAY_LABELS[selectedDay]}? This will overwrite current assignments.`)) {
+            console.log("User cancelled.");
+            console.groupEnd();
+            return;
+        }
 
         // Reset assignments for the day
         const newAssignments: TaskAssignmentMap = { ...assignments };
@@ -230,6 +243,7 @@ export default function App() {
 
         let assignedCount = 0;
         const assign = (empName: string, rule: TaskRule) => {
+            console.log(`Assigning [${rule.code}] ${rule.name} -> ${empName}`);
             const key = `${selectedDay}-${empName}`;
             if (!newAssignments[key]) newAssignments[key] = [];
             if (newAssignments[key].some(t => t.id === rule.id)) return;
@@ -238,21 +252,31 @@ export default function App() {
         };
 
         const currentSystemDate = new Date().getDate(); // 1-31
+        console.log("Current System Date:", currentSystemDate);
+        console.log("Total Rules in DB:", taskDB.length);
         
         // --- 1. Filter Rules ---
         const validRules = taskDB.filter(t => {
             // Frequency Logic
             if (t.frequency === 'weekly') {
                 const targetDay = t.frequencyDay || 'fri';
-                if (targetDay !== selectedDay) return false;
+                if (targetDay !== selectedDay) {
+                    console.log(`Skipping Weekly task '${t.name}': Configured for ${targetDay}, today is ${selectedDay}`);
+                    return false;
+                }
             } else if (t.frequency === 'monthly') {
                 if (!t.frequencyDate) return false;
-                if (t.frequencyDate !== currentSystemDate) return false;
+                if (t.frequencyDate !== currentSystemDate) {
+                    console.log(`Skipping Monthly task '${t.name}': Configured for date ${t.frequencyDate}, today is ${currentSystemDate}`);
+                    return false;
+                }
             }
             return true;
         });
+        console.log("Rules active for today:", validRules.length);
 
         // --- 2. Skilled Tasks (Rules Based) ---
+        console.log("--- Distributing Skilled Tasks ---");
         validRules.filter(t => t.type === 'skilled' && !PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => {
             const matches = staff.filter(s => t.fallbackChain.some(fc => namesMatch(s.name, fc)));
             if (matches.length > 0) {
@@ -265,6 +289,7 @@ export default function App() {
         });
 
         // --- 3. Shift Based Tasks ---
+        console.log("--- Distributing Shift Tasks ---");
         const shifts = { 'Open': [] as any[], 'Mid': [] as any[], 'Close': [] as any[], 'Overnight': [] as any[] };
         staff.forEach(s => {
             const { category } = parseTime(s.activeTime, s.role, s.isSpillover);
@@ -282,7 +307,9 @@ export default function App() {
         });
 
         // --- 4. General Tasks (Enhanced Round Robin) ---
+        console.log("--- Distributing General Tasks (Round Robin) ---");
         const generalTasks = validRules.filter(t => t.type === 'general' && !PRIORITY_PINNED_IDS.includes(t.id));
+        console.log("General Tasks count:", generalTasks.length);
         
         // 4a. Separate Preferred vs Any
         const preferredTasks: TaskRule[] = [];
@@ -292,6 +319,7 @@ export default function App() {
             if (t.fallbackChain.length > 0) preferredTasks.push(t);
             else poolTasks.push(t);
         });
+        console.log(`Split: ${preferredTasks.length} Preferred / ${poolTasks.length} Pool`);
 
         // 4b. Assign Preferred
         preferredTasks.forEach(t => {
@@ -299,6 +327,7 @@ export default function App() {
              if (match) {
                  assign(match.name, t);
              } else {
+                 console.log(`Preferred task '${t.name}' had no match active, moving to pool.`);
                  poolTasks.push(t); // No preference match found, add to general pool
              }
         });
@@ -306,6 +335,7 @@ export default function App() {
         // 4c. Round Robin for Pool
         // Sort staff by current load (including preferred tasks just assigned) to start fairly
         let rrStaff = [...staff].sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
+        console.log("Round Robin Staff Order (by Load):", rrStaff.map(s => `${s.name} (${getWorkerLoad(s.name, newAssignments)})`));
         
         if (rrStaff.length > 0) {
             poolTasks.forEach((t, i) => {
@@ -320,6 +350,7 @@ export default function App() {
         staff.forEach(s => {
             const load = getWorkerLoad(s.name, newAssignments);
             if (load === 0) {
+                console.log(`Fill Gap: Assigning generic support to ${s.name}`);
                 assign(s.name, { 
                     id: 9000 + Math.floor(Math.random()*1000), code: 'GEN', name: 'General Department Support', type: 'general', fallbackChain: [], effort: 60 
                 });
@@ -327,6 +358,8 @@ export default function App() {
         });
 
         setAssignments(newAssignments);
+        console.log("Final Assignments State:", newAssignments);
+        console.groupEnd();
         
         // User Feedback
         if(assignedCount > 0) {
@@ -337,6 +370,7 @@ export default function App() {
 
     } catch (e: any) {
         console.error("Auto Assign Error", e);
+        console.groupEnd();
         alert(`Auto-assign failed: ${e.message}`);
     }
   };
