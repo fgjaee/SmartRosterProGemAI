@@ -228,11 +228,13 @@ export default function App() {
         const newAssignments: TaskAssignmentMap = { ...assignments };
         staff.forEach(s => delete newAssignments[`${selectedDay}-${s.name}`]);
 
+        let assignedCount = 0;
         const assign = (empName: string, rule: TaskRule) => {
             const key = `${selectedDay}-${empName}`;
             if (!newAssignments[key]) newAssignments[key] = [];
             if (newAssignments[key].some(t => t.id === rule.id)) return;
             newAssignments[key].push({ ...rule, instanceId: Math.random().toString(36).substr(2, 9) });
+            assignedCount++;
         };
 
         const currentSystemDate = new Date().getDate(); // 1-31
@@ -241,39 +243,28 @@ export default function App() {
         const validRules = taskDB.filter(t => {
             // Frequency Logic
             if (t.frequency === 'weekly') {
-                // Strictly check if current selected day matches frequencyDay
-                // Default to Friday if frequencyDay is not set (legacy behavior)
                 const targetDay = t.frequencyDay || 'fri';
                 if (targetDay !== selectedDay) return false;
             } else if (t.frequency === 'monthly') {
-                // Strictly check if current SYSTEM date matches frequencyDate
-                // If frequencyDate is not set, we skip auto-assignment to avoid spamming
                 if (!t.frequencyDate) return false;
                 if (t.frequencyDate !== currentSystemDate) return false;
             }
-
             return true;
         });
 
         // --- 2. Skilled Tasks (Rules Based) ---
-        // Prioritize specific people defined in "fallbackChain"
         validRules.filter(t => t.type === 'skilled' && !PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => {
-            // Find staff who match the fallback chain
             const matches = staff.filter(s => t.fallbackChain.some(fc => namesMatch(s.name, fc)));
-            
             if (matches.length > 0) {
-                // Load Balance among skilled matches
                 matches.sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
                 assign(matches[0].name, t);
             } else {
-                // Fallback to anyone with lowest load if no skilled match found
                 const anyStaff = [...staff].sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
                 if(anyStaff.length > 0) assign(anyStaff[0].name, t);
             }
         });
 
         // --- 3. Shift Based Tasks ---
-        // Assign to Openers, Mids, Closers specifically
         const shifts = { 'Open': [] as any[], 'Mid': [] as any[], 'Close': [] as any[], 'Overnight': [] as any[] };
         staff.forEach(s => {
             const { category } = parseTime(s.activeTime, s.role, s.isSpillover);
@@ -284,37 +275,48 @@ export default function App() {
             ['Open', 'Mid', 'Close', 'Overnight'].forEach(cat => {
                 const group = shifts[cat as keyof typeof shifts];
                 if(group.length > 0) {
-                    // Assign to person with least load in that shift group
                     group.sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
                     assign(group[0].name, { ...t, name: `${t.name} (${cat})` });
                 }
             });
         });
 
-        // --- 4. General Tasks (Round Robin) ---
-        // Iterate through tasks and deal them out to staff one by one
+        // --- 4. General Tasks (Enhanced Round Robin) ---
         const generalTasks = validRules.filter(t => t.type === 'general' && !PRIORITY_PINNED_IDS.includes(t.id));
         
-        // Sort staff by current load to start Round Robin fairly (start with person who has least work)
-        let rrStaff = [...staff].sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
-        let staffIndex = 0;
+        // 4a. Separate Preferred vs Any
+        const preferredTasks: TaskRule[] = [];
+        const poolTasks: TaskRule[] = [];
 
         generalTasks.forEach(t => {
-            // Check if there is a specific rule preference first
-            const prefMatch = staff.find(s => t.fallbackChain.some(fc => namesMatch(s.name, fc)));
-            if (prefMatch) {
-                assign(prefMatch.name, t);
-            } else {
-                // Strict Round Robin
-                if (rrStaff.length > 0) {
-                    assign(rrStaff[staffIndex].name, t);
-                    staffIndex = (staffIndex + 1) % rrStaff.length;
-                }
-            }
+            if (t.fallbackChain.length > 0) preferredTasks.push(t);
+            else poolTasks.push(t);
         });
 
+        // 4b. Assign Preferred
+        preferredTasks.forEach(t => {
+             const match = staff.find(s => t.fallbackChain.some(fc => namesMatch(s.name, fc)));
+             if (match) {
+                 assign(match.name, t);
+             } else {
+                 poolTasks.push(t); // No preference match found, add to general pool
+             }
+        });
+
+        // 4c. Round Robin for Pool
+        // Sort staff by current load (including preferred tasks just assigned) to start fairly
+        let rrStaff = [...staff].sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
+        
+        if (rrStaff.length > 0) {
+            poolTasks.forEach((t, i) => {
+                // Determine worker index. 
+                // We use (i % length) to deal cards one by one to the sorted list.
+                const worker = rrStaff[i % rrStaff.length];
+                assign(worker.name, t);
+            });
+        }
+
         // --- 5. Fill Gaps ---
-        // Ensure everyone has at least one item
         staff.forEach(s => {
             const load = getWorkerLoad(s.name, newAssignments);
             if (load === 0) {
@@ -325,6 +327,14 @@ export default function App() {
         });
 
         setAssignments(newAssignments);
+        
+        // User Feedback
+        if(assignedCount > 0) {
+            alert(`Success: Distributed ${assignedCount} tasks across ${staff.length} staff members.`);
+        } else {
+            alert(`Process completed but 0 tasks were assigned. Check your Rules Database frequency settings for ${DAY_LABELS[selectedDay]}.`);
+        }
+
     } catch (e: any) {
         console.error("Auto Assign Error", e);
         alert(`Auto-assign failed: ${e.message}`);
