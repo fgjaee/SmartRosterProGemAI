@@ -121,6 +121,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [showDBModal, setShowDBModal] = useState(false);
+  const [showAutoAssignConfirm, setShowAutoAssignConfirm] = useState(false);
   const [isEditingSchedule, setIsEditingSchedule] = useState(false);
   const [manualTaskInput, setManualTaskInput] = useState<{emp: string, text: string} | null>(null);
   
@@ -214,7 +215,17 @@ export default function App() {
     return (currentAssignments[key] || []).reduce((acc, t) => acc + (t.effort || 30), 0);
   };
 
-  const autoDistribute = () => {
+  const handleRequestAutoDistribute = () => {
+      const staff = getDailyStaff();
+      if (staff.length === 0) { 
+          alert(`No working staff detected for ${DAY_LABELS[selectedDay]}. Please check the schedule to ensure shifts are entered correctly.`); 
+          return; 
+      }
+      setShowAutoAssignConfirm(true);
+  };
+
+  const runAutoDistribute = () => {
+    setShowAutoAssignConfirm(false);
     console.group("Auto Distribute Debug Log");
     console.log("Starting Auto Distribute...");
     console.log("Selected Day:", selectedDay);
@@ -226,17 +237,10 @@ export default function App() {
 
         if (staff.length === 0) { 
             console.error("No staff found. Aborting.");
-            alert(`No working staff detected for ${DAY_LABELS[selectedDay]}. Please check the schedule to ensure shifts are entered correctly.`); 
             console.groupEnd();
             return; 
         }
         
-        if(!window.confirm(`Auto-assign tasks for ${DAY_LABELS[selectedDay]}? This will overwrite current assignments.`)) {
-            console.log("User cancelled.");
-            console.groupEnd();
-            return;
-        }
-
         // Reset assignments for the day
         const newAssignments: TaskAssignmentMap = { ...assignments };
         staff.forEach(s => delete newAssignments[`${selectedDay}-${s.name}`]);
@@ -605,7 +609,7 @@ export default function App() {
                      <button onClick={window.print} className="flex items-center gap-2 px-4 py-2 text-slate-600 font-bold text-sm bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors">
                         <Printer size={18}/> Print
                      </button>
-                     <button onClick={autoDistribute} className="flex items-center gap-2 px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm rounded-lg shadow-lg shadow-indigo-200 transition-all active:scale-95">
+                     <button onClick={handleRequestAutoDistribute} className="flex items-center gap-2 px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm rounded-lg shadow-lg shadow-indigo-200 transition-all active:scale-95">
                         <Wand2 size={18}/> Auto-Assign
                      </button>
                 </div>
@@ -912,6 +916,31 @@ export default function App() {
                 <Sparkles className="text-amber-400 animate-bounce" size={24}/> {scanStatus || 'Processing...'}
             </div>
             <div className="text-white/60 text-sm mt-2 font-medium">Using Gemini Intelligence</div>
+        </div>
+      )}
+
+      {/* AUTO ASSIGN CONFIRMATION MODAL */}
+      {showAutoAssignConfirm && (
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6 animate-in zoom-in-95 duration-200">
+                <div className="w-12 h-12 bg-indigo-100 rounded-full flex items-center justify-center mb-4 text-indigo-600">
+                    <Wand2 size={24}/>
+                </div>
+                <h3 className="text-lg font-bold text-slate-900 mb-2">Auto-Assign Tasks?</h3>
+                <p className="text-slate-600 text-sm mb-6">
+                    This will distribute tasks to the <strong>{getDailyStaff().length} staff members</strong> working on <strong>{DAY_LABELS[selectedDay]}</strong>. 
+                    <br/><br/>
+                    <span className="text-amber-600 font-bold">Warning:</span> Existing assignments for this day will be overwritten.
+                </p>
+                <div className="flex gap-3">
+                    <button onClick={() => setShowAutoAssignConfirm(false)} className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg transition-colors">
+                        Cancel
+                    </button>
+                    <button onClick={runAutoDistribute} className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg shadow-lg shadow-indigo-200 transition-colors">
+                        Confirm & Run
+                    </button>
+                </div>
+            </div>
         </div>
       )}
 
