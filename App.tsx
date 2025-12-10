@@ -3,7 +3,8 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Users, Calendar, CheckCircle, Wand2, Printer, 
   Download, Upload, Plus, Trash2, ArrowRight, X, 
-  Menu, RotateCcw, Save, AlertCircle, ScanLine, Loader2, Clock, Settings, UserPlus, Briefcase
+  Menu, RotateCcw, Save, AlertCircle, ScanLine, Loader2, Clock, Settings, UserPlus, Briefcase,
+  Camera, Zap, Sparkles, MessageSquare, RefreshCw
 } from 'lucide-react';
 
 import { 
@@ -12,7 +13,7 @@ import {
 } from './types';
 import { PRIORITY_PINNED_IDS } from './constants';
 import { StorageService } from './services/storageService';
-import { OCRService } from './services/ocrService';
+import { AIService } from './services/aiService'; // Updated import
 import TaskDBModal from './components/TaskDBModal';
 
 // --- Utility Functions ---
@@ -106,15 +107,6 @@ const namesMatch = (n1: string, n2: string) => {
     return false;
 };
 
-const normalizeTaskRules = (rules: TaskRule[]) => {
-    return rules.map(task => ({
-        ...task,
-        type: task.type || 'general',
-        fallbackChain: Array.isArray(task.fallbackChain) ? task.fallbackChain : [],
-        effort: task.effort ?? 30,
-    }));
-};
-
 export default function App() {
   const [activeTab, setActiveTab] = useState<'schedule' | 'tasks' | 'team'>('tasks');
   const [selectedDay, setSelectedDay] = useState<DayKey>('fri');
@@ -125,18 +117,21 @@ export default function App() {
   const [assignments, setAssignments] = useState<TaskAssignmentMap>({});
   const [team, setTeam] = useState<Employee[]>([]);
 
-  const updateTaskDB = useCallback((rules: TaskRule[]) => {
-      setTaskDB(normalizeTaskRules(rules));
-  }, []);
-
   // UI States
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [showDBModal, setShowDBModal] = useState(false);
   const [isEditingSchedule, setIsEditingSchedule] = useState(false);
   const [manualTaskInput, setManualTaskInput] = useState<{emp: string, text: string} | null>(null);
+  
+  // AI States
   const [isScanning, setIsScanning] = useState(false);
+  const [scanStatus, setScanStatus] = useState<string>('');
+  const [huddleText, setHuddleText] = useState<string | null>(null);
+  const [aiTasks, setAiTasks] = useState<TaskRule[] | null>(null);
+  
   const scanInputRef = useRef<HTMLInputElement>(null);
+  const workAreaInputRef = useRef<HTMLInputElement>(null);
 
   // Initial Load
   useEffect(() => {
@@ -150,7 +145,7 @@ export default function App() {
                 StorageService.getTeam()
             ]);
             setSchedule(s);
-            updateTaskDB(t);
+            setTaskDB(t);
             setAssignments(a);
             setTeam(tm);
         } catch (e) {
@@ -220,78 +215,120 @@ export default function App() {
   };
 
   const autoDistribute = () => {
-    const staff = getDailyStaff();
-    if (staff.length === 0) { 
-        alert(`No working staff detected for ${DAY_LABELS[selectedDay]}. Check your schedule entries.`); 
-        return; 
-    }
-    if(!window.confirm(`Overwrite assignments for ${DAY_LABELS[selectedDay]}?`)) return;
-
-    const newAssignments: TaskAssignmentMap = { ...assignments };
-    staff.forEach(s => delete newAssignments[`${selectedDay}-${s.name}`]);
-    let assignedCount = 0;
-
-    const assign = (empName: string, rule: TaskRule) => {
-        const key = `${selectedDay}-${empName}`;
-        if (!newAssignments[key]) newAssignments[key] = [];
-        if (newAssignments[key].some(t => t.id === rule.id)) return;
-        newAssignments[key].push({ ...rule, instanceId: Math.random().toString(36).substr(2, 9) });
-        assignedCount++;
-    };
-
-    const dayLabel = DAY_LABELS[selectedDay].slice(0, 3).toUpperCase();
-    const validRules = taskDB.filter(t => {
-        const n = t.name.toUpperCase();
-        if (n.includes("ONLY") && !n.includes(dayLabel)) return false;
-        if (n.includes(`EXCL. ${dayLabel}`)) return false;
-        return true;
-    });
-
-    // 1. Skilled Tasks
-    validRules.filter(t => t.type === 'skilled' && !PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => {
-        const matches = staff.filter(s => t.fallbackChain.some(fc => namesMatch(s.name, fc)));
-        if (matches.length > 0) {
-            matches.sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
-            assign(matches[0].name, t);
-        } else {
-            const anyStaff = [...staff].sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
-            if(anyStaff.length > 0) assign(anyStaff[0].name, t);
+    try {
+        const staff = getDailyStaff();
+        if (staff.length === 0) { 
+            alert(`No working staff detected for ${DAY_LABELS[selectedDay]}. Please check the schedule to ensure shifts are entered correctly.`); 
+            return; 
         }
-    });
+        
+        if(!window.confirm(`Auto-assign tasks for ${DAY_LABELS[selectedDay]}? This will overwrite current assignments.`)) return;
 
-    // 2. Shift Based
-    const shifts = { 'Open': [] as any[], 'Mid': [] as any[], 'Close': [] as any[], 'Overnight': [] as any[] };
-    staff.forEach(s => {
-        const { category } = parseTime(s.activeTime, s.role, s.isSpillover);
-        if(category !== 'OFF') shifts[category as keyof typeof shifts].push(s);
-    });
-    validRules.filter(t => t.type === 'shift_based').forEach(t => {
-        ['Open', 'Mid', 'Close', 'Overnight'].forEach(cat => {
-            const group = shifts[cat as keyof typeof shifts];
-            if(group.length > 0) {
-                 group.sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
-                 assign(group[0].name, { ...t, name: `${t.name} (${cat})` });
+        // Reset assignments for the day
+        const newAssignments: TaskAssignmentMap = { ...assignments };
+        staff.forEach(s => delete newAssignments[`${selectedDay}-${s.name}`]);
+
+        const assign = (empName: string, rule: TaskRule) => {
+            const key = `${selectedDay}-${empName}`;
+            if (!newAssignments[key]) newAssignments[key] = [];
+            if (newAssignments[key].some(t => t.id === rule.id)) return;
+            newAssignments[key].push({ ...rule, instanceId: Math.random().toString(36).substr(2, 9) });
+        };
+
+        const currentSystemDate = new Date().getDate(); // 1-31
+        
+        // --- 1. Filter Rules ---
+        const validRules = taskDB.filter(t => {
+            // Frequency Logic
+            if (t.frequency === 'weekly') {
+                // Strictly check if current selected day matches frequencyDay
+                // Default to Friday if frequencyDay is not set (legacy behavior)
+                const targetDay = t.frequencyDay || 'fri';
+                if (targetDay !== selectedDay) return false;
+            } else if (t.frequency === 'monthly') {
+                // Strictly check if current SYSTEM date matches frequencyDate
+                // If frequencyDate is not set, we skip auto-assignment to avoid spamming
+                if (!t.frequencyDate) return false;
+                if (t.frequencyDate !== currentSystemDate) return false;
+            }
+
+            return true;
+        });
+
+        // --- 2. Skilled Tasks (Rules Based) ---
+        // Prioritize specific people defined in "fallbackChain"
+        validRules.filter(t => t.type === 'skilled' && !PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => {
+            // Find staff who match the fallback chain
+            const matches = staff.filter(s => t.fallbackChain.some(fc => namesMatch(s.name, fc)));
+            
+            if (matches.length > 0) {
+                // Load Balance among skilled matches
+                matches.sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
+                assign(matches[0].name, t);
+            } else {
+                // Fallback to anyone with lowest load if no skilled match found
+                const anyStaff = [...staff].sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
+                if(anyStaff.length > 0) assign(anyStaff[0].name, t);
             }
         });
-    });
 
-    // 3. General Tasks
-    validRules.filter(t => t.type === 'general' && !PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => {
-         const sorted = [...staff].sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
-         if(sorted.length > 0) assign(sorted[0].name, t);
-    });
+        // --- 3. Shift Based Tasks ---
+        // Assign to Openers, Mids, Closers specifically
+        const shifts = { 'Open': [] as any[], 'Mid': [] as any[], 'Close': [] as any[], 'Overnight': [] as any[] };
+        staff.forEach(s => {
+            const { category } = parseTime(s.activeTime, s.role, s.isSpillover);
+            if(category !== 'OFF') shifts[category as keyof typeof shifts].push(s);
+        });
 
-    // 4. Fill Gaps
-    staff.forEach(s => {
-        const load = getWorkerLoad(s.name, newAssignments);
-        if (load === 0) {
-            assign(s.name, { 
-                id: 9000 + Math.floor(Math.random()*1000), code: 'GEN', name: 'General Department Support', type: 'general', fallbackChain: [], effort: 60 
+        validRules.filter(t => t.type === 'shift_based').forEach(t => {
+            ['Open', 'Mid', 'Close', 'Overnight'].forEach(cat => {
+                const group = shifts[cat as keyof typeof shifts];
+                if(group.length > 0) {
+                    // Assign to person with least load in that shift group
+                    group.sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
+                    assign(group[0].name, { ...t, name: `${t.name} (${cat})` });
+                }
             });
-        }
-    });
+        });
 
-    setAssignments(newAssignments);
+        // --- 4. General Tasks (Round Robin) ---
+        // Iterate through tasks and deal them out to staff one by one
+        const generalTasks = validRules.filter(t => t.type === 'general' && !PRIORITY_PINNED_IDS.includes(t.id));
+        
+        // Sort staff by current load to start Round Robin fairly (start with person who has least work)
+        let rrStaff = [...staff].sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
+        let staffIndex = 0;
+
+        generalTasks.forEach(t => {
+            // Check if there is a specific rule preference first
+            const prefMatch = staff.find(s => t.fallbackChain.some(fc => namesMatch(s.name, fc)));
+            if (prefMatch) {
+                assign(prefMatch.name, t);
+            } else {
+                // Strict Round Robin
+                if (rrStaff.length > 0) {
+                    assign(rrStaff[staffIndex].name, t);
+                    staffIndex = (staffIndex + 1) % rrStaff.length;
+                }
+            }
+        });
+
+        // --- 5. Fill Gaps ---
+        // Ensure everyone has at least one item
+        staff.forEach(s => {
+            const load = getWorkerLoad(s.name, newAssignments);
+            if (load === 0) {
+                assign(s.name, { 
+                    id: 9000 + Math.floor(Math.random()*1000), code: 'GEN', name: 'General Department Support', type: 'general', fallbackChain: [], effort: 60 
+                });
+            }
+        });
+
+        setAssignments(newAssignments);
+    } catch (e: any) {
+        console.error("Auto Assign Error", e);
+        alert(`Auto-assign failed: ${e.message}`);
+    }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -301,21 +338,92 @@ export default function App() {
       }
   };
 
+  // --- AI HANDLERS ---
+
   const handleScanFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
       setIsScanning(true);
+      setScanStatus('Reading Schedule...');
       try {
-          const scannedData = await OCRService.parseSchedule(file);
+          const scannedData = await AIService.parseSchedule(file);
           setSchedule(scannedData);
           alert("Schedule updated from image. Please verify rows.");
       } catch (error: any) {
           alert("Scan failed: " + error.message);
       } finally {
           setIsScanning(false);
+          setScanStatus('');
           if(scanInputRef.current) scanInputRef.current.value = '';
       }
   };
+
+  const handleAnalyzeWorkplace = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      setIsScanning(true);
+      setScanStatus('Analyzing Workplace...');
+      try {
+          const tasks = await AIService.analyzeWorkplaceImage(file);
+          setAiTasks(tasks);
+      } catch (error: any) {
+          alert("Analysis failed: " + error.message);
+      } finally {
+          setIsScanning(false);
+          setScanStatus('');
+          if(workAreaInputRef.current) workAreaInputRef.current.value = '';
+      }
+  };
+
+  const handleGenerateHuddle = async () => {
+      const staff = getDailyStaff();
+      if(staff.length === 0) return alert("No staff scheduled for today");
+      
+      setIsScanning(true);
+      setScanStatus('Writing Huddle...');
+      try {
+          const pinnedTasks = taskDB.filter(t => PRIORITY_PINNED_IDS.includes(t.id)).map(t => t.name);
+          const speech = await AIService.generateDailyHuddle(
+              DAY_LABELS[selectedDay],
+              staff.length,
+              pinnedTasks.slice(0, 3)
+          );
+          setHuddleText(speech);
+      } catch(e) {
+          alert("Failed to generate huddle");
+      } finally {
+          setIsScanning(false);
+          setScanStatus('');
+      }
+  };
+
+  const handleConfirmAiTasks = () => {
+      if(!aiTasks) return;
+      // Add tasks to the manual distribution pool or first available person
+      // For simplicity, we add them as unassigned or assign to Lead
+      const staff = getDailyStaff();
+      const lead = staff.find(s => s.role.includes("Lead") || s.role.includes("Sup")) || staff[0];
+      
+      if(!lead) return alert("No staff to assign these tasks to.");
+
+      const newAssignments = {...assignments};
+      const key = `${selectedDay}-${lead.name}`;
+      
+      if(!newAssignments[key]) newAssignments[key] = [];
+      
+      aiTasks.forEach(t => {
+          newAssignments[key].push({
+              ...t,
+              instanceId: Date.now() + Math.random().toString(),
+          });
+      });
+      
+      setAssignments(newAssignments);
+      setAiTasks(null);
+      alert(`Added ${aiTasks.length} tasks to ${lead.name}'s list.`);
+  };
+
+  // ---
 
   const handleClearDay = () => {
     if(!confirm("Clear all tasks for this day?")) return;
@@ -355,6 +463,33 @@ export default function App() {
       }
       setSchedule({ ...schedule, shifts: [...schedule.shifts, ...newShifts] });
       alert(`Added ${newShifts.length} team members to schedule.`);
+  };
+
+  const handleImportScheduleToTeam = () => {
+      if(!schedule) return;
+      const existingNames = new Set(team.map(t => t.name.toLowerCase()));
+      const newMembers: Employee[] = [];
+      const timestamp = Date.now();
+
+      schedule.shifts.forEach((s, i) => {
+          if (!existingNames.has(s.name.toLowerCase()) && s.name !== "New Staff") {
+              newMembers.push({
+                  id: (timestamp + i).toString(),
+                  name: s.name,
+                  role: s.role,
+                  isActive: true
+              });
+              existingNames.add(s.name.toLowerCase());
+          }
+      });
+      
+      if(newMembers.length === 0) {
+          alert("No new staff found in schedule to import.");
+          return;
+      }
+      
+      setTeam([...team, ...newMembers]);
+      alert(`Imported ${newMembers.length} staff members from schedule.`);
   };
 
   if (isLoading || !schedule) {
@@ -399,7 +534,7 @@ export default function App() {
       <main className="flex-1 overflow-hidden relative flex flex-col">
         {activeTab === 'tasks' && (
             <>
-            <div className="bg-white border-b border-slate-200 px-6 py-3 flex justify-between items-center shrink-0 no-print shadow-sm">
+            <div className="bg-white border-b border-slate-200 px-6 py-3 flex justify-between items-center shrink-0 no-print shadow-sm overflow-x-auto">
                 <div className="flex gap-2">
                     {Object.entries(DAY_LABELS).map(([k, l]) => (
                         <button key={k} onClick={()=>setSelectedDay(k as DayKey)} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${selectedDay===k ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200 ring-2 ring-indigo-600 ring-offset-2' : 'text-slate-500 hover:bg-slate-50'}`}>
@@ -407,7 +542,16 @@ export default function App() {
                         </button>
                     ))}
                 </div>
-                <div className="flex gap-3">
+                <div className="flex gap-2 items-center ml-4 border-l pl-4 border-slate-200">
+                     <button onClick={handleGenerateHuddle} className="flex items-center gap-2 px-3 py-2 text-amber-600 font-bold text-sm bg-amber-50 hover:bg-amber-100 rounded-lg transition-colors border border-amber-200" title="Uses Flash Lite (Fast)">
+                        <Zap size={16} className="fill-current"/> Huddle
+                     </button>
+                     <button onClick={() => workAreaInputRef.current?.click()} className="flex items-center gap-2 px-3 py-2 text-blue-600 font-bold text-sm bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors border border-blue-200" title="Uses Pro Vision (Smart)">
+                        <Camera size={16}/> Snap & Solve
+                        <input type="file" ref={workAreaInputRef} className="hidden" accept="image/*" capture="environment" onChange={handleAnalyzeWorkplace}/>
+                     </button>
+                </div>
+                <div className="flex gap-3 ml-auto">
                      <button onClick={() => setShowDBModal(true)} className="flex items-center gap-2 px-4 py-2 text-slate-600 font-bold text-sm bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors">
                         <Menu size={18}/> Rules
                      </button>
@@ -650,9 +794,14 @@ export default function App() {
                             <h2 className="text-xl font-bold text-slate-800">Team Database</h2>
                             <p className="text-slate-500 text-sm">Manage global list of employees available for scheduling.</p>
                         </div>
-                        <button onClick={() => setTeam([...team, { id: Date.now().toString(), name: 'New Employee', role: 'Associate', isActive: true }])} className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-indigo-700 shadow-md">
-                            <UserPlus size={16}/> Add Employee
-                        </button>
+                        <div className="flex gap-2">
+                             <button onClick={handleImportScheduleToTeam} className="flex items-center gap-2 bg-slate-100 text-slate-700 px-4 py-2 rounded-lg font-bold text-sm hover:bg-slate-200 border border-slate-200">
+                                <RefreshCw size={16}/> Sync from Schedule
+                            </button>
+                            <button onClick={() => setTeam([...team, { id: Date.now().toString(), name: 'New Employee', role: 'Associate', isActive: true }])} className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-indigo-700 shadow-md">
+                                <UserPlus size={16}/> Add Employee
+                            </button>
+                        </div>
                     </div>
                     <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
                         {team.map(member => (
@@ -700,21 +849,76 @@ export default function App() {
 
       </main>
 
-      <TaskDBModal
-        isOpen={showDBModal}
-        onClose={() => setShowDBModal(false)}
-        tasks={taskDB}
-        setTasks={updateTaskDB}
+      <TaskDBModal 
+        isOpen={showDBModal} 
+        onClose={() => setShowDBModal(false)} 
+        tasks={taskDB} 
+        setTasks={setTaskDB}
         staffNames={(schedule?.shifts || []).map(s => s.name)}
       />
       
+      {/* SCANNING LOADER */}
       {isScanning && (
         <div className="fixed inset-0 bg-black/60 z-[100] flex flex-col items-center justify-center backdrop-blur-sm">
-            <Loader2 size={64} className="text-white animate-spin mb-6"/>
-            <div className="text-white font-bold text-2xl tracking-tight">Analyzing Schedule...</div>
-            <div className="text-white/60 text-sm mt-2 font-medium">Extracting names, roles, and shifts using AI</div>
+            <div className="relative">
+                <div className="absolute inset-0 bg-indigo-500 blur-xl opacity-20 animate-pulse"></div>
+                <Loader2 size={64} className="text-white animate-spin mb-6 relative z-10"/>
+            </div>
+            <div className="text-white font-bold text-2xl tracking-tight flex items-center gap-2">
+                <Sparkles className="text-amber-400 animate-bounce" size={24}/> {scanStatus || 'Processing...'}
+            </div>
+            <div className="text-white/60 text-sm mt-2 font-medium">Using Gemini Intelligence</div>
         </div>
       )}
+
+      {/* HUDDLE MODAL */}
+      {huddleText && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden">
+                  <div className="bg-gradient-to-r from-amber-500 to-orange-500 p-4 flex justify-between items-center text-white">
+                      <h3 className="font-bold flex items-center gap-2"><Zap size={20}/> Daily Huddle Script</h3>
+                      <button onClick={() => setHuddleText(null)} className="hover:bg-white/20 p-1 rounded"><X size={20}/></button>
+                  </div>
+                  <div className="p-6">
+                      <p className="text-lg leading-relaxed text-slate-700 font-medium whitespace-pre-wrap">{huddleText}</p>
+                  </div>
+                  <div className="bg-slate-50 p-4 border-t border-slate-100 flex justify-end">
+                      <button onClick={() => setHuddleText(null)} className="px-4 py-2 bg-slate-800 text-white rounded-lg font-bold text-sm">Close</button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* AI TASKS MODAL */}
+      {aiTasks && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden">
+                  <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-4 flex justify-between items-center text-white">
+                      <h3 className="font-bold flex items-center gap-2"><Camera size={20}/> Work Area Analysis</h3>
+                      <button onClick={() => setAiTasks(null)} className="hover:bg-white/20 p-1 rounded"><X size={20}/></button>
+                  </div>
+                  <div className="p-6">
+                      <div className="mb-4 text-sm text-slate-500">Gemini detected the following potential tasks from your photo:</div>
+                      <div className="space-y-2">
+                          {aiTasks.map((t, i) => (
+                              <div key={i} className="flex justify-between items-center p-3 border border-slate-200 rounded-lg bg-slate-50">
+                                  <div>
+                                      <div className="font-bold text-slate-800">{t.name}</div>
+                                      <div className="text-xs text-slate-500 uppercase tracking-wider">{t.effort} mins • {t.code}</div>
+                                  </div>
+                                  <CheckCircle size={20} className="text-green-500"/>
+                              </div>
+                          ))}
+                      </div>
+                  </div>
+                  <div className="bg-slate-50 p-4 border-t border-slate-100 flex justify-end gap-2">
+                      <button onClick={() => setAiTasks(null)} className="px-4 py-2 text-slate-500 font-bold text-sm hover:text-slate-700">Cancel</button>
+                      <button onClick={handleConfirmAiTasks} className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold text-sm shadow-lg shadow-indigo-200">Add to Schedule</button>
+                  </div>
+              </div>
+          </div>
+      )}
+
     </div>
   );
 }

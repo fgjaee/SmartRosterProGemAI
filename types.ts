@@ -39,6 +39,9 @@ export interface TaskRule {
   fallbackChain: string[]; // List of employee names prioritized for this task
   timing?: string;
   effort?: number; // Estimated duration in minutes
+  frequency?: 'daily' | 'weekly' | 'monthly';
+  frequencyDay?: DayKey; // For Weekly: Which day?
+  frequencyDate?: number; // For Monthly: Which date (1-31)?
 }
 
 export interface AssignedTask extends TaskRule {
