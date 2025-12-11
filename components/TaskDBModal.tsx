@@ -1,13 +1,12 @@
-
 import React, { useState, useRef } from 'react';
-import { X, Trash2, Plus, ArrowLeft, ArrowRight, Database, Download, Upload, Save, CalendarClock, Ban } from 'lucide-react';
+import { X, Trash2, Plus, ArrowLeft, ArrowRight, Database, Download, Upload, Save, CalendarClock, Ban, Clock } from 'lucide-react';
 import { TaskRule, TaskType, DAY_LABELS, DayKey } from '../types';
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
   tasks: TaskRule[];
-  setTasks: (tasks: TaskRule[]) => void;
+  setTasks: React.Dispatch<React.SetStateAction<TaskRule[]>>;
   staffNames: string[];
 }
 
@@ -18,32 +17,38 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
 
   if (!isOpen) return null;
 
+  // Use functional update pattern for safer state manipulation
   const handleUpdate = (id: number, field: keyof TaskRule, value: any) => {
-    setTasks(tasks.map(t => t.id === id ? { ...t, [field]: value } : t));
+    setTasks((prev) => prev.map(t => t.id === id ? { ...t, [field]: value } : t));
   };
 
   const toggleExcludedDay = (id: number, day: DayKey) => {
+      // Find task in current props to get current exclusions
       const task = tasks.find(t => t.id === id);
       if(!task) return;
+      
       const current = task.excludedDays || [];
       const newExcluded = current.includes(day) ? current.filter(d => d !== day) : [...current, day];
-      handleUpdate(id, 'excludedDays', newExcluded);
+      
+      setTasks((prev) => prev.map(t => t.id === id ? { ...t, excludedDays: newExcluded } : t));
   };
 
-  const handleDeleteTask = (id: number) => {
-    if(confirm("Are you sure you want to permanently delete this rule?")) {
-        setTasks(tasks.filter(t => t.id !== id));
+  const handleDeleteTask = (e: React.MouseEvent, id: number | string) => {
+    e.stopPropagation();
+    if(window.confirm("Are you sure you want to permanently delete this rule?")) {
+        // Robust delete: Functional update + String conversion for safety
+        setTasks((prev) => prev.filter(t => String(t.id) !== String(id)));
     }
   };
 
   const handleAddFallback = (id: number) => {
       if(!newPersonInput) return;
-      setTasks(tasks.map(t => t.id === id ? { ...t, fallbackChain: [...t.fallbackChain, newPersonInput] } : t));
+      setTasks((prev) => prev.map(t => t.id === id ? { ...t, fallbackChain: [...t.fallbackChain, newPersonInput] } : t));
       setNewPersonInput('');
   };
 
   const handleRemoveFallback = (id: number, nameToRemove: string) => {
-      setTasks(tasks.map(t => t.id === id ? { ...t, fallbackChain: t.fallbackChain.filter(n => n !== nameToRemove) } : t));
+      setTasks((prev) => prev.map(t => t.id === id ? { ...t, fallbackChain: t.fallbackChain.filter(n => n !== nameToRemove) } : t));
   };
 
   const handleMoveFallback = (id: number, idx: number, direction: 'up' | 'down') => {
@@ -59,7 +64,7 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
           [newChain[idx], newChain[idx + 1]] = [newChain[idx + 1], newChain[idx]];
       }
       
-      setTasks(tasks.map(t => t.id === id ? { ...t, fallbackChain: newChain } : t));
+      setTasks((prev) => prev.map(t => t.id === id ? { ...t, fallbackChain: newChain } : t));
   };
 
   const handleExport = () => {
@@ -79,6 +84,7 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
         try {
             const json = JSON.parse(event.target?.result as string);
             if(Array.isArray(json)) {
+                // @ts-ignore
                 setTasks(json);
                 alert("Rules imported successfully");
             } else {
@@ -88,6 +94,15 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
     };
     reader.readAsText(file);
   };
+
+  // Generate Time Options
+  const timeOptions = [
+      "Store Open",
+      "6:00 AM", "7:00 AM", "8:00 AM", "9:00 AM", "10:00 AM", "11:00 AM",
+      "12:00 PM", "1:00 PM", "2:00 PM", "3:00 PM", "4:00 PM", 
+      "5:00 PM", "6:00 PM", "7:00 PM", "8:00 PM", "9:00 PM", "10:00 PM",
+      "Closing"
+  ];
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
@@ -121,7 +136,7 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
             <div className="space-y-3">
                 {tasks.map(task => (
                     <div key={task.id} className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm flex flex-col lg:flex-row gap-4 items-start lg:items-center">
-                        <div className="flex-1 grid grid-cols-1 md:grid-cols-12 gap-4 w-full items-center">
+                        <div className="flex-1 grid grid-cols-1 md:grid-cols-12 gap-3 w-full items-center">
                             
                             {/* Code */}
                             <div className="md:col-span-1">
@@ -134,7 +149,7 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
                             </div>
 
                             {/* Name */}
-                            <div className="md:col-span-3">
+                            <div className="md:col-span-2">
                                 <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Task Name</label>
                                 <input 
                                     className="w-full text-sm font-medium border border-slate-300 rounded px-2 py-1"
@@ -154,6 +169,7 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
                                     <option value="skilled">Skilled (Priority)</option>
                                     <option value="general">General (Round Robin)</option>
                                     <option value="shift_based">Shift Based</option>
+                                    <option value="all_staff">All Hands / Everyone</option>
                                 </select>
                             </div>
 
@@ -221,6 +237,24 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
                                 </div>
                             </div>
 
+                            {/* Due Time (New) */}
+                            <div className="md:col-span-2">
+                                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Due By</label>
+                                <div className="relative">
+                                    <select 
+                                        className="w-full text-sm border border-slate-300 rounded px-2 py-1 bg-white appearance-none"
+                                        value={task.dueTime || ''}
+                                        onChange={e => handleUpdate(task.id, 'dueTime', e.target.value)}
+                                    >
+                                        <option value="">Anytime</option>
+                                        {timeOptions.map(t => (
+                                            <option key={t} value={t}>{t}</option>
+                                        ))}
+                                    </select>
+                                    <Clock size={12} className="absolute right-2 top-2 text-slate-400 pointer-events-none"/>
+                                </div>
+                            </div>
+
                              {/* Effort */}
                              <div className="md:col-span-1">
                                 <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Mins</label>
@@ -233,7 +267,7 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
                             </div>
 
                             {/* Fallback Chain */}
-                            <div className="md:col-span-3">
+                            <div className="md:col-span-2">
                                 <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Priority Team</label>
                                 <div className="flex flex-wrap gap-2 items-center">
                                     {task.fallbackChain.map((person, idx) => (
@@ -246,7 +280,7 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
                                                 <ArrowLeft size={10}/>
                                             </button>
                                             <span className="font-bold">{idx + 1}.</span> 
-                                            <span>{person.split(',')[0]}</span>
+                                            <span className="truncate max-w-[50px]">{person.split(',')[0]}</span>
                                             <button 
                                                 onClick={() => handleMoveFallback(task.id, idx, 'down')} 
                                                 disabled={idx === task.fallbackChain.length - 1} 
@@ -288,15 +322,17 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
                             </div>
 
                         </div>
-                        <button onClick={() => handleDeleteTask(task.id)} className="p-2 text-slate-400 hover:text-white hover:bg-red-500 rounded transition-colors self-end lg:self-center" title="Delete Rule">
+                        <button onClick={(e) => handleDeleteTask(e, task.id)} className="p-2 text-slate-400 hover:text-white hover:bg-red-500 rounded transition-colors self-end lg:self-center" title="Delete Rule">
                             <Trash2 size={20}/>
                         </button>
                     </div>
                 ))}
                 
                 <button onClick={() => {
-                    const newId = Math.max(...tasks.map(t => t.id), 0) + 1;
-                    setTasks([...tasks, { id: newId, code: 'NEW', name: 'New Task', type: 'general', fallbackChain: [], effort: 30, frequency: 'daily' }]);
+                    // Generate a safe unique ID
+                    const newId = tasks.length > 0 ? Math.max(...tasks.map(t => Number(t.id) || 0)) + 1 : 1000;
+                    // @ts-ignore
+                    setTasks((prev) => [...prev, { id: newId, code: 'NEW', name: 'New Task', type: 'general', fallbackChain: [], effort: 30, frequency: 'daily', dueTime: '' }]);
                 }} className="w-full py-3 border-2 border-dashed border-slate-300 rounded-lg text-slate-500 font-bold hover:border-indigo-500 hover:text-indigo-600 hover:bg-white transition-all flex items-center justify-center gap-2">
                     <Plus size={20}/> Add New Rule
                 </button>

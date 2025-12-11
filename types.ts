@@ -29,7 +29,7 @@ export interface ScheduleData {
   shifts: Shift[];
 }
 
-export type TaskType = 'skilled' | 'general' | 'shift_based' | 'manual';
+export type TaskType = 'skilled' | 'general' | 'shift_based' | 'manual' | 'all_staff';
 
 export interface TaskRule {
   id: number;
@@ -38,6 +38,7 @@ export interface TaskRule {
   type: TaskType;
   fallbackChain: string[]; // List of employee names prioritized for this task
   timing?: string;
+  dueTime?: string; // e.g. "9:00 AM", "Store Open"
   effort?: number; // Estimated duration in minutes
   frequency?: 'daily' | 'weekly' | 'monthly';
   frequencyDay?: DayKey; // For Weekly: Which day?

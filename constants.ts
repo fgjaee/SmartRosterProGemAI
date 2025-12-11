@@ -64,7 +64,8 @@ export const DEFAULT_TASK_DB: TaskRule[] = [
     name: "First Impressions Set",
     type: "general",
     fallbackChain: [],
-    frequency: 'daily'
+    frequency: 'daily',
+    dueTime: "9:00 AM"
   },
   {
     id: 204,
@@ -204,7 +205,8 @@ export const DEFAULT_TASK_DB: TaskRule[] = [
     name: "Floor Set By 9am (All)",
     type: "general",
     fallbackChain: [],
-    frequency: 'daily'
+    frequency: 'daily',
+    dueTime: "9:00 AM"
   },
   {
     id: 212,
@@ -252,7 +254,7 @@ export const DEFAULT_TASK_DB: TaskRule[] = [
     id: 110,
     code: "PS",
     name: "Flashfood Bags",
-    type: "general",
+    type: "all_staff",
     fallbackChain: [],
     frequency: 'daily'
   },
@@ -271,7 +273,7 @@ export const DEFAULT_TASK_DB: TaskRule[] = [
     id: 301,
     code: "MAN",
     name: "Organix Sorting",
-    type: "shift_based",
+    type: "all_staff",
     fallbackChain: [
       "Wood, William B",
       "Hernandez, Victoria",
@@ -362,7 +364,8 @@ export const DEFAULT_TASK_DB: TaskRule[] = [
       "Shah, Nabil"
     ],
     effort: 60,
-    frequency: 'daily'
+    frequency: 'daily',
+    dueTime: 'Closing'
   },
   {
     id: 310,

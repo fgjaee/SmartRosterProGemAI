@@ -26,6 +26,20 @@ const getPrevDay = (d: DayKey): DayKey => {
     return days[idx === 0 ? 6 : idx - 1];
 };
 
+const getDueTimeValue = (t: string | undefined) => {
+    if (!t) return 9999;
+    if (t === "Store Open") return 700;
+    if (t === "Closing") return 2200;
+    const match = t.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/);
+    if (match) {
+        let h = parseInt(match[1]);
+        if (match[3] === "PM" && h !== 12) h += 12;
+        if (match[3] === "AM" && h === 12) h = 0;
+        return h * 100 + parseInt(match[2]);
+    }
+    return 9999;
+};
+
 // Robust Time Parsing
 const parseTime = (timeStr: string, role: string, isSpillover = false) => {
     // 1. Sanitize input
@@ -287,7 +301,14 @@ export default function App() {
             return true;
         });
 
-        // --- 2. Skilled Tasks (Rules Based) ---
+        // --- 2. All Staff Tasks (Everyone gets them) ---
+        validRules.filter(t => t.type === 'all_staff').forEach(t => {
+            staff.forEach(s => {
+                assign(s.name, t);
+            });
+        });
+
+        // --- 3. Skilled Tasks (Rules Based) ---
         // IMPORTANT: We now include PRIORITY_PINNED_IDS in individual assignments so users see their specific responsibilities
         validRules.filter(t => t.type === 'skilled').forEach(t => {
             let assigned = false;
@@ -309,7 +330,7 @@ export default function App() {
             }
         });
 
-        // --- 3. Shift Based Tasks ---
+        // --- 4. Shift Based Tasks ---
         const shifts = { 'Open': [] as any[], 'Mid': [] as any[], 'Close': [] as any[], 'Overnight': [] as any[] };
         staff.forEach(s => {
             const { category } = parseTime(s.activeTime, s.role, s.isSpillover);
@@ -326,7 +347,7 @@ export default function App() {
             });
         });
 
-        // --- 4. General Tasks (Enhanced Round Robin) ---
+        // --- 5. General Tasks (Enhanced Round Robin) ---
         const generalTasks = validRules.filter(t => t.type === 'general');
         const poolTasks: TaskRule[] = [];
 
@@ -357,7 +378,7 @@ export default function App() {
             });
         }
 
-        // --- 5. Fill Gaps ---
+        // --- 6. Fill Gaps ---
         staff.forEach(s => {
             const load = getWorkerLoad(s.name, newAssignments);
             if (load === 0) {
@@ -639,7 +660,14 @@ export default function App() {
 
                     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 print:grid-cols-2 print:gap-8">
                         {getDailyStaff().map(staff => {
+                            // Sort by Due Time (earlier first), then priority score
                             const tasks = (assignments[`${selectedDay}-${staff.name}`] || []).sort((a,b) => {
+                                // 1. Due Time Sort
+                                const timeA = getDueTimeValue(a.dueTime);
+                                const timeB = getDueTimeValue(b.dueTime);
+                                if (timeA !== timeB) return timeA - timeB;
+
+                                // 2. Priority Score Sort
                                 const score = (t: AssignedTask) => t.type === 'skilled' ? 1 : t.code === 'MAN' ? 5 : 3;
                                 return score(a) - score(b);
                             });
@@ -683,7 +711,14 @@ export default function App() {
                                                             <div className="w-3 h-3 border border-slate-600"></div>
                                                         </div>
                                                         <div className="flex-1">
-                                                            <div className="text-sm font-medium text-slate-700 leading-snug">{cleanTaskName(t.name)}</div>
+                                                            <div className="flex justify-between items-start">
+                                                                <div className="text-sm font-medium text-slate-700 leading-snug">{cleanTaskName(t.name)}</div>
+                                                                {t.dueTime && (
+                                                                     <span className="text-[10px] font-bold text-amber-600 bg-amber-50 border border-amber-100 px-1.5 rounded whitespace-nowrap ml-2">
+                                                                         By {t.dueTime}
+                                                                     </span>
+                                                                )}
+                                                            </div>
                                                         </div>
                                                         <button 
                                                             onClick={() => handleDeleteTask(staff.name, t.instanceId)}
