@@ -13,7 +13,7 @@ import {
 } from './types';
 import { PRIORITY_PINNED_IDS } from './constants';
 import { StorageService } from './services/storageService';
-import { AIService } from './services/aiService'; // Updated import
+import { AIService } from './services/aiService'; 
 import TaskDBModal from './components/TaskDBModal';
 
 // --- Utility Functions ---
@@ -28,66 +28,78 @@ const getPrevDay = (d: DayKey): DayKey => {
 
 // Robust Time Parsing
 const parseTime = (timeStr: string, role: string, isSpillover = false) => {
+    // 1. Sanitize input
     if (!timeStr) return { h: 24, label: 'OFF', category: 'OFF' };
+    const raw = timeStr.toUpperCase().trim();
     
-    // Normalize: remove special chars, extra spaces, upper case
-    const cleanStr = timeStr.replace(/[^a-zA-Z0-9:]/g, '').toUpperCase();
-    
-    // Explicit OFF checks
-    if (['OFF', 'O', '0', 'LOAN', 'LOANED', 'LOANEDOUT', 'X', 'VAC', 'SICK', '-'].includes(cleanStr)) {
+    // 2. Strict OFF checks (Catches LOAN, REQ, VAC, SICK, X, etc.)
+    if (!raw || ['OFF', 'X', 'VAC', 'SICK', 'REQ', 'LOAN', 'LOANED OUT', 'L.O.', 'PTO', 'BRV'].some(off => raw.includes(off))) {
         return { h: 24, label: 'OFF', category: 'OFF' };
     }
 
-    // Try to find ANY number. If no number, assume OFF (or malformed).
-    // Regex finds the FIRST number sequence, optionally followed by minutes and AM/PM
-    const match = timeStr.match(/(\d{1,2})(?::(\d{2}))?\s*(AM|PM|A|P)?/i);
-
-    if (!match) {
-        return { h: 24, label: timeStr, category: 'OFF' };
-    }
+    // 3. Extract numbers
+    const match = raw.match(/(\d{1,2})(?::(\d{2}))?\s*(A|P|AM|PM)?/);
+    if (!match) return { h: 24, label: timeStr, category: 'OFF' };
 
     let h = parseInt(match[1]);
     const m = match[2] || '00';
-    const suffix = match[3] ? match[3].toUpperCase() : null;
+    const suffix = match[3];
 
-    // Logic to convert 12h -> 24h
+    // 4. Time Inference Logic
     if (suffix) {
-        if ((suffix.startsWith('P')) && h !== 12) h += 12;
-        if ((suffix.startsWith('A')) && h === 12) h = 0;
+        // Explicit Suffix provided
+        if (suffix.startsWith('P') && h !== 12) h += 12;
+        if (suffix.startsWith('A') && h === 12) h = 0;
     } else {
-        // Inference without suffix
-        if (h >= 1 && h <= 6) {
-             // 1-4 is usually PM for normal staff, AM for overnight/openers
-             if (role?.toLowerCase().includes('overnight') && h <= 4) {
-                 // AM
+        // No Suffix - Guess based on Role & Common Retail Shifts
+        if (h === 12) {
+             // 12:00 is Noon (Start) -> Mid (12:00)
+        } else if (h >= 1 && h <= 3) {
+             h += 12; // 1-3 is usually PM (13:00, 14:00, 15:00)
+        } else if (h >= 7 && h <= 11) {
+             // 7-11 is usually AM
+        } else if (h >= 4 && h <= 6) {
+             // 4-6 is Ambiguous (4am Stock vs 4pm Close)
+             const r = (role || '').toLowerCase();
+             // Check against early morning roles
+             if (r.includes('stock') || r.includes('flow') || r.includes('baker') || r.includes('open') || r.includes('truck') || r.includes('merch') || r.includes('rec')) {
+                 // AM (Keep h as is)
              } else {
-                 h += 12; // PM
+                 h += 12; // PM (Default to Close)
              }
-        } else if (h === 12) {
-             // 12 is usually PM
         }
     }
 
-    // Categorize
+    // 5. Categorize Shift Type
+    // Open: 4am - 6am start
+    // Mid: 7am - 3pm start
+    // Close: 4pm - 7pm start
+    // Overnight: 8pm - 3am start
     let category = 'Mid';
-    if (h >= 20 || h <= 3) category = 'Overnight'; // 8pm - 3am starts
-    else if (h >= 4 && h <= 6) category = 'Open';  // 4am - 6am starts
-    else if (h >= 7 && h <= 15) category = 'Mid';  // 7am - 3pm starts
-    else category = 'Close';                       // 4pm - 7pm starts
+    if (h >= 20 || h <= 3) category = 'Overnight';
+    else if (h >= 4 && h <= 6) category = 'Open';
+    else if (h >= 16 && h <= 19) category = 'Close';
+    else category = 'Mid'; 
 
-    if (isSpillover) category = 'Overnight';
+    // 6. Spillover Logic
+    // Only return valid data if this shift explicitly qualifies as a "Previous Day Overnight" shift
+    if (isSpillover) {
+        if (category === 'Overnight') {
+             const dispH = h % 12 === 0 ? 12 : h % 12;
+             const dispAmpm = h >= 12 ? 'PM' : 'AM';
+             return { h, label: `${dispH}:${m}${dispAmpm} (Prev)`, category };
+        }
+        return { h: 24, label: 'OFF', category: 'OFF' };
+    }
 
-    // Formatting label
-    const displayH = h % 12 === 0 ? 12 : h % 12;
-    const displayAmPm = h >= 12 && h < 24 ? 'PM' : 'AM';
-    const displayLabel = `${displayH}:${m}${displayAmPm}`;
-
-    return { h, label: isSpillover ? `${displayLabel} (Prev)` : displayLabel, category };
+    // Standard Display Format
+    const dispH = h % 12 === 0 ? 12 : h % 12;
+    const dispAmpm = h >= 12 ? 'PM' : 'AM';
+    return { h, label: `${dispH}:${m}${dispAmpm}`, category };
 };
 
 const formatShiftString = (timeStr: string) => {
     if (!timeStr || ['OFF', 'LOANED OUT', 'O', 'X'].includes(timeStr.toUpperCase())) return timeStr;
-    // Return as is for editing view, let parseTime handle logic
     return timeStr; 
 };
 
@@ -185,9 +197,9 @@ export default function App() {
     const todayStaff = shifts.map(s => {
         const t = s[selectedDay];
         if (!t) return null;
-        const { category } = parseTime(t, s.role);
+        const { category, label } = parseTime(t, s.role);
         if (category === 'OFF') return null;
-        return { ...s, activeTime: t, isSpillover: false };
+        return { ...s, activeTime: label, isSpillover: false };
     }).filter(s => s !== null);
 
     // Spillover (Overnight from prev day)
@@ -195,9 +207,9 @@ export default function App() {
     const spilloverStaff = shifts.map(s => {
         const t = s[prevDay];
         if (!t) return null;
-        const { category } = parseTime(t, s.role, true);
+        const { category, label } = parseTime(t, s.role, true);
         if (category === 'Overnight') {
-            return { ...s, activeTime: t, isSpillover: true };
+            return { ...s, activeTime: label, isSpillover: true };
         }
         return null;
     }).filter(s => s !== null);
@@ -256,31 +268,24 @@ export default function App() {
         };
 
         const currentSystemDate = new Date().getDate(); // 1-31
-        console.log("Current System Date:", currentSystemDate);
-        console.log("Total Rules in DB:", taskDB.length);
         
         // --- 1. Filter Rules ---
         const validRules = taskDB.filter(t => {
+            // Excluded Days Logic
+            if (t.excludedDays && t.excludedDays.includes(selectedDay)) return false;
+
             // Frequency Logic
             if (t.frequency === 'weekly') {
                 const targetDay = t.frequencyDay || 'fri';
-                if (targetDay !== selectedDay) {
-                    console.log(`Skipping Weekly task '${t.name}': Configured for ${targetDay}, today is ${selectedDay}`);
-                    return false;
-                }
+                if (targetDay !== selectedDay) return false;
             } else if (t.frequency === 'monthly') {
                 if (!t.frequencyDate) return false;
-                if (t.frequencyDate !== currentSystemDate) {
-                    console.log(`Skipping Monthly task '${t.name}': Configured for date ${t.frequencyDate}, today is ${currentSystemDate}`);
-                    return false;
-                }
+                if (t.frequencyDate !== currentSystemDate) return false;
             }
             return true;
         });
-        console.log("Rules active for today:", validRules.length);
 
         // --- 2. Skilled Tasks (Rules Based) ---
-        console.log("--- Distributing Skilled Tasks ---");
         validRules.filter(t => t.type === 'skilled' && !PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => {
             const matches = staff.filter(s => t.fallbackChain.some(fc => namesMatch(s.name, fc)));
             if (matches.length > 0) {
@@ -293,7 +298,6 @@ export default function App() {
         });
 
         // --- 3. Shift Based Tasks ---
-        console.log("--- Distributing Shift Tasks ---");
         const shifts = { 'Open': [] as any[], 'Mid': [] as any[], 'Close': [] as any[], 'Overnight': [] as any[] };
         staff.forEach(s => {
             const { category } = parseTime(s.activeTime, s.role, s.isSpillover);
@@ -311,11 +315,8 @@ export default function App() {
         });
 
         // --- 4. General Tasks (Enhanced Round Robin) ---
-        console.log("--- Distributing General Tasks (Round Robin) ---");
         const generalTasks = validRules.filter(t => t.type === 'general' && !PRIORITY_PINNED_IDS.includes(t.id));
-        console.log("General Tasks count:", generalTasks.length);
         
-        // 4a. Separate Preferred vs Any
         const preferredTasks: TaskRule[] = [];
         const poolTasks: TaskRule[] = [];
 
@@ -323,28 +324,19 @@ export default function App() {
             if (t.fallbackChain.length > 0) preferredTasks.push(t);
             else poolTasks.push(t);
         });
-        console.log(`Split: ${preferredTasks.length} Preferred / ${poolTasks.length} Pool`);
 
-        // 4b. Assign Preferred
         preferredTasks.forEach(t => {
              const match = staff.find(s => t.fallbackChain.some(fc => namesMatch(s.name, fc)));
              if (match) {
                  assign(match.name, t);
              } else {
-                 console.log(`Preferred task '${t.name}' had no match active, moving to pool.`);
-                 poolTasks.push(t); // No preference match found, add to general pool
+                 poolTasks.push(t);
              }
         });
 
-        // 4c. Round Robin for Pool
-        // Sort staff by current load (including preferred tasks just assigned) to start fairly
         let rrStaff = [...staff].sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
-        console.log("Round Robin Staff Order (by Load):", rrStaff.map(s => `${s.name} (${getWorkerLoad(s.name, newAssignments)})`));
-        
         if (rrStaff.length > 0) {
             poolTasks.forEach((t, i) => {
-                // Determine worker index. 
-                // We use (i % length) to deal cards one by one to the sorted list.
                 const worker = rrStaff[i % rrStaff.length];
                 assign(worker.name, t);
             });
@@ -354,7 +346,6 @@ export default function App() {
         staff.forEach(s => {
             const load = getWorkerLoad(s.name, newAssignments);
             if (load === 0) {
-                console.log(`Fill Gap: Assigning generic support to ${s.name}`);
                 assign(s.name, { 
                     id: 9000 + Math.floor(Math.random()*1000), code: 'GEN', name: 'General Department Support', type: 'general', fallbackChain: [], effort: 60 
                 });
@@ -362,14 +353,12 @@ export default function App() {
         });
 
         setAssignments(newAssignments);
-        console.log("Final Assignments State:", newAssignments);
         console.groupEnd();
         
-        // User Feedback
         if(assignedCount > 0) {
             alert(`Success: Distributed ${assignedCount} tasks across ${staff.length} staff members.`);
         } else {
-            alert(`Process completed but 0 tasks were assigned. Check your Rules Database frequency settings for ${DAY_LABELS[selectedDay]}.`);
+            alert(`Process completed but 0 tasks were assigned. Check your Rules Database settings for ${DAY_LABELS[selectedDay]}.`);
         }
 
     } catch (e: any) {
@@ -447,8 +436,6 @@ export default function App() {
 
   const handleConfirmAiTasks = () => {
       if(!aiTasks) return;
-      // Add tasks to the manual distribution pool or first available person
-      // For simplicity, we add them as unassigned or assign to Lead
       const staff = getDailyStaff();
       const lead = staff.find(s => s.role.includes("Lead") || s.role.includes("Sup")) || staff[0];
       
@@ -470,8 +457,6 @@ export default function App() {
       setAiTasks(null);
       alert(`Added ${aiTasks.length} tasks to ${lead.name}'s list.`);
   };
-
-  // ---
 
   const handleClearDay = () => {
     if(!confirm("Clear all tasks for this day?")) return;

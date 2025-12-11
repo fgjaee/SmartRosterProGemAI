@@ -1,6 +1,6 @@
 
 import React, { useState, useRef } from 'react';
-import { X, Trash2, Plus, ArrowUp, ArrowDown, Database, Download, Upload, Save, CalendarClock } from 'lucide-react';
+import { X, Trash2, Plus, ArrowLeft, ArrowRight, Database, Download, Upload, Save, CalendarClock, Ban } from 'lucide-react';
 import { TaskRule, TaskType, DAY_LABELS, DayKey } from '../types';
 
 interface Props {
@@ -22,6 +22,14 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
     setTasks(tasks.map(t => t.id === id ? { ...t, [field]: value } : t));
   };
 
+  const toggleExcludedDay = (id: number, day: DayKey) => {
+      const task = tasks.find(t => t.id === id);
+      if(!task) return;
+      const current = task.excludedDays || [];
+      const newExcluded = current.includes(day) ? current.filter(d => d !== day) : [...current, day];
+      handleUpdate(id, 'excludedDays', newExcluded);
+  };
+
   const handleDeleteTask = (id: number) => {
     if(confirm("Are you sure you want to permanently delete this rule?")) {
         setTasks(tasks.filter(t => t.id !== id));
@@ -36,6 +44,22 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
 
   const handleRemoveFallback = (id: number, nameToRemove: string) => {
       setTasks(tasks.map(t => t.id === id ? { ...t, fallbackChain: t.fallbackChain.filter(n => n !== nameToRemove) } : t));
+  };
+
+  const handleMoveFallback = (id: number, idx: number, direction: 'up' | 'down') => {
+      const task = tasks.find(t => t.id === id);
+      if (!task) return;
+      
+      const newChain = [...task.fallbackChain];
+      if (direction === 'up') {
+          if (idx === 0) return;
+          [newChain[idx - 1], newChain[idx]] = [newChain[idx], newChain[idx - 1]];
+      } else {
+          if (idx === newChain.length - 1) return;
+          [newChain[idx], newChain[idx + 1]] = [newChain[idx + 1], newChain[idx]];
+      }
+      
+      setTasks(tasks.map(t => t.id === id ? { ...t, fallbackChain: newChain } : t));
   };
 
   const handleExport = () => {
@@ -173,6 +197,27 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
                                             />
                                         </div>
                                     )}
+
+                                    {task.frequency === 'daily' && (
+                                         <div className="flex items-center gap-1 relative group cursor-pointer">
+                                             <span className="text-[10px] text-slate-500 font-bold flex items-center gap-1"><Ban size={10}/> Skip:</span>
+                                             <div className="flex gap-1">
+                                                 {Object.keys(DAY_LABELS).map((d) => {
+                                                     const isExcluded = (task.excludedDays || []).includes(d as DayKey);
+                                                     return (
+                                                        <button 
+                                                            key={d}
+                                                            onClick={() => toggleExcludedDay(task.id, d as DayKey)}
+                                                            className={`w-4 h-4 text-[9px] rounded flex items-center justify-center font-bold uppercase transition-colors ${isExcluded ? 'bg-red-500 text-white' : 'bg-slate-200 text-slate-500 hover:bg-slate-300'}`}
+                                                            title={isExcluded ? `Skipped on ${DAY_LABELS[d as DayKey]}` : `Run on ${DAY_LABELS[d as DayKey]}`}
+                                                        >
+                                                            {d.charAt(0).toUpperCase()}
+                                                        </button>
+                                                     );
+                                                 })}
+                                             </div>
+                                         </div>
+                                    )}
                                 </div>
                             </div>
 
@@ -192,9 +237,25 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
                                 <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Priority Team</label>
                                 <div className="flex flex-wrap gap-2 items-center">
                                     {task.fallbackChain.map((person, idx) => (
-                                        <span key={idx} className="inline-flex items-center gap-1 px-2 py-1 bg-indigo-50 text-indigo-700 text-xs rounded border border-indigo-100" title={`Priority Level ${idx + 1}`}>
-                                            <span className="font-bold mr-1">{idx + 1}.</span> {person.split(',')[0]}
-                                            <button onClick={() => handleRemoveFallback(task.id, person)} className="hover:text-red-500"><X size={10}/></button>
+                                        <span key={idx} className="inline-flex items-center gap-1 px-1.5 py-1 bg-indigo-50 text-indigo-700 text-xs rounded border border-indigo-100" title={`Priority Level ${idx + 1}`}>
+                                            <button 
+                                                onClick={() => handleMoveFallback(task.id, idx, 'up')} 
+                                                disabled={idx === 0} 
+                                                className="hover:text-indigo-900 disabled:opacity-30"
+                                            >
+                                                <ArrowLeft size={10}/>
+                                            </button>
+                                            <span className="font-bold">{idx + 1}.</span> 
+                                            <span>{person.split(',')[0]}</span>
+                                            <button 
+                                                onClick={() => handleMoveFallback(task.id, idx, 'down')} 
+                                                disabled={idx === task.fallbackChain.length - 1} 
+                                                className="hover:text-indigo-900 disabled:opacity-30"
+                                            >
+                                                <ArrowRight size={10}/>
+                                            </button>
+                                            <div className="w-px h-3 bg-indigo-200 mx-1"></div>
+                                            <button onClick={() => handleRemoveFallback(task.id, person)} className="hover:text-red-500"><X size={12}/></button>
                                         </span>
                                     ))}
                                     <div className="flex items-center gap-1 relative group">
@@ -227,7 +288,7 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
                             </div>
 
                         </div>
-                        <button onClick={() => handleDeleteTask(task.id)} className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors self-end lg:self-center" title="Delete Rule">
+                        <button onClick={() => handleDeleteTask(task.id)} className="p-2 text-slate-400 hover:text-white hover:bg-red-500 rounded transition-colors self-end lg:self-center" title="Delete Rule">
                             <Trash2 size={20}/>
                         </button>
                     </div>

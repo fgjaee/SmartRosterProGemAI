@@ -3,7 +3,7 @@ import { TaskRule } from "./types";
 
 export const DEFAULT_TASK_DB: TaskRule[] = [
     // --- SKILLED / PRIORITY TASKS ---
-    { id: 101, code: "ON", name: "Truck Unload & Sort", type: "skilled", effort: 120, fallbackChain: ["Essix, Solomon", "Powell, Marlon", "Wood, William B"], frequency: 'daily' },
+    { id: 101, code: "ON", name: "Truck Unload & Sort", type: "skilled", effort: 120, fallbackChain: ["Essix, Solomon", "Powell, Marlon", "Wood, William B"], frequency: 'daily', excludedDays: ['thu'] },
     { id: 112, code: "EOD", name: "Breakdown All Pallets in Cooler/BR", type: "skilled", effort: 90, fallbackChain: ["Essix, Solomon", "Powell, Marlon", "Wood, William B"], frequency: 'daily' },
     { id: 102, code: "ORD", name: "DOB Orders (Daily Ordering)", type: "skilled", effort: 60, fallbackChain: ["Powell, Marlon", "Mullinix, James", "Nash, Deb A"], frequency: 'daily' },
     { id: 103, code: "FP", name: "Freshpak Production", type: "skilled", effort: 120, fallbackChain: ["Cooley, Sandra K", "Nash, Deb A", "Cannon, Beth M"], frequency: 'daily' },

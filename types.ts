@@ -42,6 +42,7 @@ export interface TaskRule {
   frequency?: 'daily' | 'weekly' | 'monthly';
   frequencyDay?: DayKey; // For Weekly: Which day?
   frequencyDate?: number; // For Monthly: Which date (1-31)?
+  excludedDays?: DayKey[]; // Days to skip this task
 }
 
 export interface AssignedTask extends TaskRule {
