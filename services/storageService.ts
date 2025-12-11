@@ -10,47 +10,37 @@ const KEYS = {
   TEAM: 'smartRoster_team_v6',
 };
 
-// Simulate network delay
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
 export const StorageService = {
   getSchedule: async (): Promise<ScheduleData> => {
-    await delay(300);
     const data = localStorage.getItem(KEYS.SCHEDULE);
     return data ? JSON.parse(data) : INITIAL_SCHEDULE;
   },
 
   saveSchedule: async (data: ScheduleData): Promise<void> => {
-    await delay(300);
     localStorage.setItem(KEYS.SCHEDULE, JSON.stringify(data));
   },
 
   getTaskDB: async (): Promise<TaskRule[]> => {
-    await delay(300);
     const data = localStorage.getItem(KEYS.TASK_DB);
     // If no data found, return the full new default DB
     return data ? JSON.parse(data) : DEFAULT_TASK_DB;
   },
 
   saveTaskDB: async (data: TaskRule[]): Promise<void> => {
-    await delay(300);
     localStorage.setItem(KEYS.TASK_DB, JSON.stringify(data));
   },
 
   getAssignments: async (): Promise<TaskAssignmentMap> => {
-    await delay(300);
     const data = localStorage.getItem(KEYS.ASSIGNMENTS);
     return data ? JSON.parse(data) : {};
   },
 
   saveAssignments: async (data: TaskAssignmentMap): Promise<void> => {
-    await delay(200); // Faster save for assignments as they change often
     localStorage.setItem(KEYS.ASSIGNMENTS, JSON.stringify(data));
   },
 
   // --- Team / Employee Management ---
   getTeam: async (): Promise<Employee[]> => {
-      await delay(300);
       const data = localStorage.getItem(KEYS.TEAM);
       if(data) return JSON.parse(data);
       
@@ -65,7 +55,6 @@ export const StorageService = {
   },
 
   saveTeam: async (data: Employee[]): Promise<void> => {
-      await delay(300);
       localStorage.setItem(KEYS.TEAM, JSON.stringify(data));
   },
 
