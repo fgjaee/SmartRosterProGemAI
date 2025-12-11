@@ -169,6 +169,7 @@ export default function App() {
   useEffect(() => {
     const loadData = async () => {
         setIsLoading(true);
+        console.log("App: Starting initial data load...");
         try {
             const [s, t, a, tm] = await Promise.all([
                 StorageService.getSchedule(),
@@ -176,6 +177,14 @@ export default function App() {
                 StorageService.getAssignments(),
                 StorageService.getTeam()
             ]);
+            
+            console.log("App: Data loaded successfully", { 
+                shifts: s?.shifts?.length, 
+                tasks: t?.length, 
+                assignments: Object.keys(a).length, 
+                team: tm?.length 
+            });
+
             setSchedule(s);
             setTaskDB(t);
             setAssignments(a);
@@ -198,9 +207,11 @@ export default function App() {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       // Reduced delay to 500ms for snappier saves
       saveTimeoutRef.current = setTimeout(async () => {
+          console.log(`[AutoSave] Saving ${key}...`);
           try {
             await fn();
-          } catch(e) { console.error("Save failed", e); }
+            console.log(`[AutoSave] ${key} saved.`);
+          } catch(e) { console.error(`[AutoSave] ${key} failed`, e); }
           finally { setIsSaving(false); }
       }, 500);
   };
@@ -209,6 +220,17 @@ export default function App() {
   useEffect(() => { if (taskDB.length) saveData('taskdb', () => StorageService.saveTaskDB(taskDB)); }, [taskDB]);
   useEffect(() => { if (Object.keys(assignments).length) saveData('assign', () => StorageService.saveAssignments(assignments)); }, [assignments]);
   useEffect(() => { if (team.length) saveData('team', () => StorageService.saveTeam(team)); }, [team]);
+
+  const handlePrint = () => {
+      console.log("Print initiated by user.");
+      try {
+          window.print();
+          console.log("Print dialog requested.");
+      } catch (e) {
+          console.error("Print error:", e);
+          alert("Printing failed. See console for error details.");
+      }
+  };
 
   const getDailyStaff = useCallback(() => {
     if (!schedule) return [];
@@ -631,7 +653,7 @@ export default function App() {
                      <button onClick={handleClearDay} className="flex items-center gap-2 px-4 py-2 text-red-600 font-bold text-sm hover:bg-red-50 rounded-lg transition-colors">
                         <RotateCcw size={18}/> Clear
                      </button>
-                     <button onClick={() => window.print()} className="flex items-center gap-2 px-4 py-2 text-slate-600 font-bold text-sm bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors">
+                     <button onClick={handlePrint} className="flex items-center gap-2 px-4 py-2 text-slate-600 font-bold text-sm bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors">
                         <Printer size={18}/> Print
                      </button>
                      <button onClick={handleRequestAutoDistribute} className="flex items-center gap-2 px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm rounded-lg shadow-lg shadow-indigo-200 transition-all active:scale-95">
