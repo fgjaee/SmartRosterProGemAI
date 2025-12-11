@@ -18,12 +18,13 @@ import TaskDBModal from './components/TaskDBModal';
 
 // --- Utility Functions ---
 
+const ORDERED_DAYS: DayKey[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
 const cleanTaskName = (n: string) => n.replace(/\(Sat Only\)/gi, '').replace(/\(Fri Only\)/gi, '').replace(/\(Excl.*?\)/gi, '').trim();
 
 const getPrevDay = (d: DayKey): DayKey => {
-    const days: DayKey[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-    const idx = days.indexOf(d);
-    return days[idx === 0 ? 6 : idx - 1];
+    const idx = ORDERED_DAYS.indexOf(d);
+    return ORDERED_DAYS[idx === 0 ? 6 : idx - 1];
 };
 
 const getDueTimeValue = (t: string | undefined) => {
@@ -41,10 +42,10 @@ const getDueTimeValue = (t: string | undefined) => {
 };
 
 // Robust Time Parsing
-const parseTime = (timeStr: string, role: string, isSpillover = false) => {
+const parseTime = (timeStr: any, role: string, isSpillover = false) => {
     // 1. Sanitize input
-    if (!timeStr) return { h: 24, label: 'OFF', category: 'OFF' };
-    const raw = timeStr.toUpperCase().trim();
+    if (timeStr === null || timeStr === undefined || timeStr === '') return { h: 24, label: 'OFF', category: 'OFF' };
+    const raw = String(timeStr).toUpperCase().trim();
     
     // 2. Strict OFF checks (Catches LOAN, REQ, VAC, SICK, X, etc.)
     if (!raw || ['OFF', 'X', 'VAC', 'SICK', 'REQ', 'LOAN', 'LOANED OUT', 'L.O.', 'PTO', 'BRV', 'NOT', 'N/A'].some(off => raw.includes(off))) {
@@ -53,7 +54,7 @@ const parseTime = (timeStr: string, role: string, isSpillover = false) => {
 
     // 3. Extract numbers
     const match = raw.match(/(\d{1,2})(?::(\d{2}))?\s*(A|P|AM|PM)?/);
-    if (!match) return { h: 24, label: timeStr, category: 'OFF' };
+    if (!match) return { h: 24, label: raw, category: 'OFF' };
 
     let h = parseInt(match[1]);
     const m = match[2] || '00';
@@ -113,9 +114,11 @@ const parseTime = (timeStr: string, role: string, isSpillover = false) => {
     return { h, label: `${dispH}:${m}${dispAmpm}`, category };
 };
 
-const formatShiftString = (timeStr: string) => {
-    if (!timeStr || ['OFF', 'LOANED OUT', 'O', 'X'].includes(timeStr.toUpperCase())) return timeStr;
-    return timeStr; 
+const formatShiftString = (timeStr: any) => {
+    if (timeStr === null || timeStr === undefined) return "";
+    const str = String(timeStr);
+    if (!str || ['OFF', 'LOANED OUT', 'O', 'X'].includes(str.toUpperCase())) return str;
+    return str; 
 };
 
 const getBadgeColor = (code: string) => {
@@ -606,9 +609,9 @@ export default function App() {
             <>
             <div className="bg-white border-b border-slate-200 px-6 py-3 flex justify-between items-center shrink-0 no-print shadow-sm overflow-x-auto">
                 <div className="flex gap-2">
-                    {Object.entries(DAY_LABELS).map(([k, l]) => (
-                        <button key={k} onClick={()=>setSelectedDay(k as DayKey)} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${selectedDay===k ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200 ring-2 ring-indigo-600 ring-offset-2' : 'text-slate-500 hover:bg-slate-50'}`}>
-                            {k.toUpperCase()}
+                    {ORDERED_DAYS.map((k) => (
+                        <button key={k} onClick={()=>setSelectedDay(k)} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${selectedDay===k ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200 ring-2 ring-indigo-600 ring-offset-2' : 'text-slate-500 hover:bg-slate-50'}`}>
+                            {DAY_LABELS[k].toUpperCase()}
                         </button>
                     ))}
                 </div>
@@ -628,7 +631,7 @@ export default function App() {
                      <button onClick={handleClearDay} className="flex items-center gap-2 px-4 py-2 text-red-600 font-bold text-sm hover:bg-red-50 rounded-lg transition-colors">
                         <RotateCcw size={18}/> Clear
                      </button>
-                     <button onClick={window.print} className="flex items-center gap-2 px-4 py-2 text-slate-600 font-bold text-sm bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors">
+                     <button onClick={() => window.print()} className="flex items-center gap-2 px-4 py-2 text-slate-600 font-bold text-sm bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors">
                         <Printer size={18}/> Print
                      </button>
                      <button onClick={handleRequestAutoDistribute} className="flex items-center gap-2 px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm rounded-lg shadow-lg shadow-indigo-200 transition-all active:scale-95">
@@ -762,6 +765,112 @@ export default function App() {
                 </div>
             </div>
             </>
+        )}
+
+        {activeTab === 'schedule' && (
+            <div className="flex-1 overflow-auto p-8 bg-slate-50 flex justify-center">
+                <div className="w-full max-w-6xl bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
+                    <div className="p-6 border-b border-slate-200 flex justify-between items-center bg-white">
+                        <div>
+                            <h2 className="text-xl font-bold text-slate-800">Staff Schedule</h2>
+                            <p className="text-slate-500 text-sm">Week Period: <input className="border-b border-dashed border-slate-300 focus:outline-none focus:border-indigo-500" value={schedule.week_period || ''} onChange={(e) => setSchedule({...schedule, week_period: e.target.value})} /></p>
+                        </div>
+                        <div className="flex gap-2">
+                             <input type="file" ref={scanInputRef} className="hidden" onChange={handleScanFileChange} accept="image/*,application/pdf" />
+                             <button onClick={() => scanInputRef.current?.click()} className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-indigo-700 shadow-md shadow-indigo-200 transition-colors">
+                                <ScanLine size={16}/> Scan Schedule (OCR)
+                             </button>
+                             {isEditingSchedule ? (
+                                 <button onClick={()=>setIsEditingSchedule(false)} className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg font-bold text-sm"><Save size={16}/> Save Changes</button>
+                             ) : (
+                                 <button onClick={()=>setIsEditingSchedule(true)} className="flex items-center gap-2 bg-slate-100 text-slate-700 px-4 py-2 rounded-lg font-bold text-sm hover:bg-slate-200"><Calendar size={16}/> Edit Schedule</button>
+                             )}
+                        </div>
+                    </div>
+                    <div className="overflow-x-auto flex-1">
+                        <table className="w-full text-left border-collapse">
+                            <thead className="bg-slate-50 text-xs font-bold uppercase text-slate-500 tracking-wider">
+                                <tr>
+                                    <th className="p-4 border-b border-slate-200 w-64">Employee</th>
+                                    {ORDERED_DAYS.map(d => <th key={d} className="p-4 border-b border-slate-200 text-center">{DAY_LABELS[d].slice(0,3)}</th>)}
+                                    {isEditingSchedule && <th className="p-4 border-b border-slate-200 w-10"></th>}
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                                {(schedule.shifts || []).map((shift, idx) => (
+                                    <tr key={shift.id} className="hover:bg-slate-50/50 transition-colors">
+                                        <td className="p-4">
+                                            {isEditingSchedule ? (
+                                                <div className="space-y-1">
+                                                    <input className="w-full border border-slate-300 rounded px-2 py-1 text-sm font-bold" value={shift.name} onChange={e => {
+                                                        const newShifts = [...(schedule.shifts || [])];
+                                                        newShifts[idx] = { ...newShifts[idx], name: e.target.value };
+                                                        setSchedule({...schedule, shifts: newShifts});
+                                                    }} />
+                                                    <input className="w-full border border-slate-300 rounded px-2 py-1 text-xs text-slate-500" placeholder="Role" value={shift.role} onChange={e => {
+                                                        const newShifts = [...(schedule.shifts || [])];
+                                                        newShifts[idx] = { ...newShifts[idx], role: e.target.value };
+                                                        setSchedule({...schedule, shifts: newShifts});
+                                                    }} />
+                                                </div>
+                                            ) : (
+                                                <div>
+                                                    <div className="font-bold text-slate-800">{shift.name}</div>
+                                                    <div className="text-xs text-slate-500">{shift.role}</div>
+                                                </div>
+                                            )}
+                                        </td>
+                                        {ORDERED_DAYS.map((day) => (
+                                            <td key={day} className="p-4 text-center">
+                                                {isEditingSchedule ? (
+                                                    <input 
+                                                        className="w-24 text-center text-sm border border-slate-200 rounded py-1 focus:ring-2 ring-indigo-500 outline-none" 
+                                                        value={shift[day as DayKey] || ''}
+                                                        onChange={e => {
+                                                            const newShifts = schedule.shifts.map((s, i) => 
+                                                                i === idx ? { ...s, [day]: e.target.value } : s
+                                                            );
+                                                            setSchedule({...schedule, shifts: newShifts});
+                                                        }}
+                                                    />
+                                                ) : (
+                                                    <span className={`text-xs font-medium px-2 py-1 rounded whitespace-nowrap ${['OFF', 'X'].includes(String(shift[day as DayKey]).toUpperCase()) ? 'text-slate-300 bg-slate-50' : 'text-slate-700 bg-white border border-slate-200'}`}>
+                                                        {formatShiftString(shift[day as DayKey])}
+                                                    </span>
+                                                )}
+                                            </td>
+                                        ))}
+                                        {isEditingSchedule && (
+                                            <td className="p-4">
+                                                <button onClick={() => {
+                                                     const newShifts = (schedule.shifts || []).filter((_, i) => i !== idx);
+                                                     setSchedule({...schedule, shifts: newShifts});
+                                                }} className="text-slate-300 hover:text-red-500"><Trash2 size={16}/></button>
+                                            </td>
+                                        )}
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                    {isEditingSchedule && (
+                        <div className="p-4 border-t border-slate-200 bg-slate-50 flex gap-2">
+                            <button 
+                                onClick={() => setSchedule({...schedule, shifts: [...(schedule.shifts || []), { id: Date.now().toString(), name: "New Staff", role: "Stock", sun: "OFF", mon: "OFF", tue: "OFF", wed: "OFF", thu: "OFF", fri: "OFF", sat: "OFF" }]})}
+                                className="flex-1 py-2 border-2 border-dashed border-slate-300 rounded-lg text-slate-500 font-bold hover:border-indigo-500 hover:text-indigo-600 transition-colors flex items-center justify-center gap-2"
+                            >
+                                <Plus size={18}/> Add Staff Row
+                            </button>
+                             <button 
+                                onClick={handleImportTeamToSchedule}
+                                className="flex-1 py-2 border-2 border-dashed border-slate-300 rounded-lg text-slate-500 font-bold hover:border-indigo-500 hover:text-indigo-600 transition-colors flex items-center justify-center gap-2"
+                            >
+                                <Briefcase size={18}/> Add From Team Database
+                            </button>
+                        </div>
+                    )}
+                </div>
+            </div>
         )}
 
         {activeTab === 'team' && (
