@@ -33,7 +33,7 @@ const parseTime = (timeStr: string, role: string, isSpillover = false) => {
     const raw = timeStr.toUpperCase().trim();
     
     // 2. Strict OFF checks (Catches LOAN, REQ, VAC, SICK, X, etc.)
-    if (!raw || ['OFF', 'X', 'VAC', 'SICK', 'REQ', 'LOAN', 'LOANED OUT', 'L.O.', 'PTO', 'BRV'].some(off => raw.includes(off))) {
+    if (!raw || ['OFF', 'X', 'VAC', 'SICK', 'REQ', 'LOAN', 'LOANED OUT', 'L.O.', 'PTO', 'BRV', 'NOT', 'N/A'].some(off => raw.includes(off))) {
         return { h: 24, label: 'OFF', category: 'OFF' };
     }
 
@@ -61,8 +61,9 @@ const parseTime = (timeStr: string, role: string, isSpillover = false) => {
         } else if (h >= 4 && h <= 6) {
              // 4-6 is Ambiguous (4am Stock vs 4pm Close)
              const r = (role || '').toLowerCase();
-             // Check against early morning roles
-             if (r.includes('stock') || r.includes('flow') || r.includes('baker') || r.includes('open') || r.includes('truck') || r.includes('merch') || r.includes('rec')) {
+             // Check against early morning roles AND Leadership roles
+             const amRoles = ['stock', 'flow', 'baker', 'open', 'truck', 'merch', 'rec', 'lead', 'sup', 'mngr', 'manager', 'dir'];
+             if (amRoles.some(am => r.includes(am))) {
                  // AM (Keep h as is)
              } else {
                  h += 12; // PM (Default to Close)
