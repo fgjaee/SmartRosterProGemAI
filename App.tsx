@@ -116,8 +116,9 @@ const namesMatch = (n1: string, n2: string) => {
     const clean = (s: string) => s.toLowerCase().replace(/[^a-z]/g, '');
     const s1 = clean(n1);
     const s2 = clean(n2);
-    if(s1.includes(s2) || s2.includes(s1)) return true;
-    return false;
+    // require at least 3 chars to avoid matching initials too aggressively unless names are short
+    if (s1.length < 3 || s2.length < 3) return s1 === s2;
+    return s1.includes(s2) || s2.includes(s1);
 };
 
 export default function App() {
@@ -287,12 +288,22 @@ export default function App() {
         });
 
         // --- 2. Skilled Tasks (Rules Based) ---
-        validRules.filter(t => t.type === 'skilled' && !PRIORITY_PINNED_IDS.includes(t.id)).forEach(t => {
-            const matches = staff.filter(s => t.fallbackChain.some(fc => namesMatch(s.name, fc)));
-            if (matches.length > 0) {
-                matches.sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
-                assign(matches[0].name, t);
-            } else {
+        // IMPORTANT: We now include PRIORITY_PINNED_IDS in individual assignments so users see their specific responsibilities
+        validRules.filter(t => t.type === 'skilled').forEach(t => {
+            let assigned = false;
+            
+            // STRICT CHAIN ORDER: Try 1st preference, then 2nd, etc.
+            for (const name of t.fallbackChain) {
+                const match = staff.find(s => namesMatch(s.name, name));
+                if(match) {
+                    assign(match.name, t);
+                    assigned = true;
+                    break;
+                }
+            }
+
+            // Fallback: If no priority match found, assign to best available
+            if (!assigned) {
                 const anyStaff = [...staff].sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
                 if(anyStaff.length > 0) assign(anyStaff[0].name, t);
             }
@@ -316,25 +327,28 @@ export default function App() {
         });
 
         // --- 4. General Tasks (Enhanced Round Robin) ---
-        const generalTasks = validRules.filter(t => t.type === 'general' && !PRIORITY_PINNED_IDS.includes(t.id));
-        
-        const preferredTasks: TaskRule[] = [];
+        const generalTasks = validRules.filter(t => t.type === 'general');
         const poolTasks: TaskRule[] = [];
 
         generalTasks.forEach(t => {
-            if (t.fallbackChain.length > 0) preferredTasks.push(t);
-            else poolTasks.push(t);
+            // If general task has a specific person assigned (e.g., Apple Set -> Wood), try them first
+            if (t.fallbackChain.length > 0) {
+                 let assigned = false;
+                 for (const name of t.fallbackChain) {
+                     const match = staff.find(s => namesMatch(s.name, name));
+                     if(match) {
+                         assign(match.name, t);
+                         assigned = true;
+                         break;
+                     }
+                 }
+                 if(!assigned) poolTasks.push(t);
+            } else {
+                poolTasks.push(t);
+            }
         });
 
-        preferredTasks.forEach(t => {
-             const match = staff.find(s => t.fallbackChain.some(fc => namesMatch(s.name, fc)));
-             if (match) {
-                 assign(match.name, t);
-             } else {
-                 poolTasks.push(t);
-             }
-        });
-
+        // Round Robin the remaining poolTasks
         let rrStaff = [...staff].sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
         if (rrStaff.length > 0) {
             poolTasks.forEach((t, i) => {

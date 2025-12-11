@@ -4,10 +4,10 @@ import { DEFAULT_TASK_DB } from "../constants";
 
 // Updated version keys to force refresh of data structure
 const KEYS = {
-  SCHEDULE: 'smartRoster_schedule_v5',
-  TASK_DB: 'smartRoster_taskDB_v5',
-  ASSIGNMENTS: 'smartRoster_assignments_v5',
-  TEAM: 'smartRoster_team_v5',
+  SCHEDULE: 'smartRoster_schedule_v6',
+  TASK_DB: 'smartRoster_taskDB_v6',
+  ASSIGNMENTS: 'smartRoster_assignments_v6',
+  TEAM: 'smartRoster_team_v6',
 };
 
 // Simulate network delay
