@@ -41,7 +41,80 @@ const getDueTimeValue = (t: string | undefined) => {
     return 9999;
 };
 
-// Robust Time Parsing
+// --- NEW: Accurate Shift Range Parsing ---
+const parseShiftStartEnd = (timeStr: string) => {
+    // Expected formats: "5:00-1:00", "7-3", "12:00-8:00"
+    if (!timeStr || ['OFF', 'X', 'VAC'].some(x => timeStr.toUpperCase().includes(x))) {
+        return { start: -1, end: -1 };
+    }
+
+    const clean = timeStr.replace(/\s/g, '');
+    const parts = clean.split('-');
+    if (parts.length !== 2) return { start: -1, end: -1 };
+
+    const parsePart = (p: string, isEnd: boolean) => {
+        const match = p.match(/(\d{1,2})(?::(\d{2}))?/);
+        if (!match) return 0;
+        let h = parseInt(match[1]);
+        const m = parseInt(match[2] || '0');
+
+        // Logic to infer AM/PM based on typical retail flow if AM/PM missing
+        // 4,5,6,7,8,9,10,11 -> Usually AM (Start)
+        // 12,1,2,3 -> PM
+        if (h <= 3 || h === 12) { 
+             // Likely PM, unless 12 (Noon)
+             // But if it is an End time and start was AM, 1 could be 13:00
+        }
+        
+        return h * 100 + m;
+    };
+
+    let start = parsePart(parts[0], false);
+    let end = parsePart(parts[1], true);
+
+    // Normalize Start
+    if (start < 500) start += 1200; // 1-4 is likely 1pm-4pm start (unless overnight, handled by context usually)
+    
+    // Normalize End relative to Start
+    if (end < start) {
+        end += 1200; // Crosses noon or midnight
+    }
+    
+    // Specific Fixes for common patterns
+    // 5:00-1:00 (5am to 1pm) -> 500 to 1300
+    if (start === 500 && end === 100) end = 1300;
+    
+    return { start, end };
+};
+
+// --- NEW: Compatibility Check using Pre-Calculated Times ---
+// Now accepts numbers instead of reparsing string to avoid errors
+const isStaffCompatibleWithTask = (start: number, end: number, task: TaskRule) => {
+    if (start === -1 || end === -1) return false;
+
+    // 1. Closing Tasks
+    if (task.dueTime === "Closing" || task.name.toLowerCase().includes("close")) {
+        // Must work until at least 6pm (1800) to be considered for closing
+        if (end < 1800) return false;
+    }
+
+    // 2. Opening Tasks
+    if (task.dueTime === "Store Open" || task.name.toLowerCase().includes("open") || task.code === "T0") {
+        // Must start by 8am
+        if (start > 800) return false;
+    }
+    
+    // 3. 9AM Sets
+    if (task.dueTime === "9:00 AM") {
+        // Must start early enough to complete it.
+        // Assuming 9am tasks require starting before 9am.
+        if (start >= 900) return false;
+    }
+
+    return true;
+};
+
+// Robust Time Parsing (Display oriented)
 const parseTime = (timeStr: any, role: string, isSpillover = false) => {
     // 1. Sanitize input
     if (timeStr === null || timeStr === undefined || timeStr === '') return { h: 24, label: 'OFF', category: 'OFF' };
@@ -87,10 +160,6 @@ const parseTime = (timeStr: any, role: string, isSpillover = false) => {
     }
 
     // 5. Categorize Shift Type
-    // Open: 4am - 6am start
-    // Mid: 7am - 3pm start
-    // Close: 4pm - 7pm start
-    // Overnight: 8pm - 3am start
     let category = 'Mid';
     if (h >= 20 || h <= 3) category = 'Overnight';
     else if (h >= 4 && h <= 6) category = 'Open';
@@ -98,7 +167,6 @@ const parseTime = (timeStr: any, role: string, isSpillover = false) => {
     else category = 'Mid'; 
 
     // 6. Spillover Logic
-    // Only return valid data if this shift explicitly qualifies as a "Previous Day Overnight" shift
     if (isSpillover) {
         if (category === 'Overnight') {
              const dispH = h % 12 === 0 ? 12 : h % 12;
@@ -108,7 +176,6 @@ const parseTime = (timeStr: any, role: string, isSpillover = false) => {
         return { h: 24, label: 'OFF', category: 'OFF' };
     }
 
-    // Standard Display Format
     const dispH = h % 12 === 0 ? 12 : h % 12;
     const dispAmpm = h >= 12 ? 'PM' : 'AM';
     return { h, label: `${dispH}:${m}${dispAmpm}`, category };
@@ -241,7 +308,18 @@ export default function App() {
         if (!t) return null;
         const { category, label } = parseTime(t, s.role);
         if (category === 'OFF') return null;
-        return { ...s, activeTime: label, isSpillover: false };
+        
+        // Compute compatibility times once
+        const { start, end } = parseShiftStartEnd(t);
+
+        return { 
+            ...s, 
+            activeTime: label, 
+            isSpillover: false,
+            compStart: start,
+            compEnd: end,
+            rawShift: t
+        };
     }).filter(s => s !== null);
 
     // Spillover (Overnight from prev day)
@@ -251,7 +329,16 @@ export default function App() {
         if (!t) return null;
         const { category, label } = parseTime(t, s.role, true);
         if (category === 'Overnight') {
-            return { ...s, activeTime: label, isSpillover: true };
+            const { end } = parseShiftStartEnd(t);
+            return { 
+                ...s, 
+                activeTime: label, 
+                isSpillover: true,
+                // Effective shift for today is 00:00 to End
+                compStart: 0, 
+                compEnd: end,
+                rawShift: t
+            };
         }
         return null;
     }).filter(s => s !== null);
@@ -261,7 +348,7 @@ export default function App() {
     [...spilloverStaff, ...todayStaff].forEach(item => {
         if (item && !uniqueMap.has(item.id)) uniqueMap.set(item.id, item);
     });
-    return Array.from(uniqueMap.values()) as (Shift & { activeTime: string, isSpillover: boolean })[];
+    return Array.from(uniqueMap.values()) as (Shift & { activeTime: string, isSpillover: boolean, compStart: number, compEnd: number, rawShift: string })[];
   }, [schedule, selectedDay]);
 
   const getWorkerLoad = (empName: string, currentAssignments: TaskAssignmentMap) => {
@@ -287,7 +374,7 @@ export default function App() {
     try {
         const staff = getDailyStaff();
         console.log("Detected Working Staff:", staff.length);
-        console.table(staff.map(s => ({ name: s.name, role: s.role, time: s.activeTime })));
+        console.table(staff.map(s => ({ name: s.name, role: s.role, time: s.activeTime, raw: s.rawShift, start: s.compStart, end: s.compEnd })));
 
         if (staff.length === 0) { 
             console.error("No staff found. Aborting.");
@@ -311,7 +398,7 @@ export default function App() {
 
         const currentSystemDate = new Date().getDate(); // 1-31
         
-        // --- 1. Filter Rules ---
+        // --- 1. Filter & Sort Rules (Logic Update: Prioritize Front-End Tasks) ---
         const validRules = taskDB.filter(t => {
             // Excluded Days Logic
             if (t.excludedDays && t.excludedDays.includes(selectedDay)) return false;
@@ -325,6 +412,23 @@ export default function App() {
                 if (t.frequencyDate !== currentSystemDate) return false;
             }
             return true;
+        }).sort((a, b) => {
+            // Priority Sort Order:
+            // 1. Pinned IDs (High Priority)
+            // 2. "Set" Tasks (Stocking - Front of House) - codes T, W
+            // 3. Other Skilled
+            // 4. General
+            const isAPinned = PRIORITY_PINNED_IDS.includes(a.id);
+            const isBPinned = PRIORITY_PINNED_IDS.includes(b.id);
+            if (isAPinned && !isBPinned) return -1;
+            if (!isAPinned && isBPinned) return 1;
+
+            const isAStock = a.code.startsWith('T') || a.code.startsWith('W');
+            const isBStock = b.code.startsWith('T') || b.code.startsWith('W');
+            if (isAStock && !isBStock) return -1;
+            if (!isAStock && isBStock) return 1;
+
+            return 0;
         });
 
         // --- 2. All Staff Tasks (Everyone gets them) ---
@@ -334,15 +438,20 @@ export default function App() {
             });
         });
 
-        // --- 3. Skilled Tasks (Rules Based) ---
-        // IMPORTANT: We now include PRIORITY_PINNED_IDS in individual assignments so users see their specific responsibilities
+        // --- 3. Skilled Tasks (Rules Based + TIME COMPATIBILITY) ---
         validRules.filter(t => t.type === 'skilled').forEach(t => {
             let assigned = false;
             
             // STRICT CHAIN ORDER: Try 1st preference, then 2nd, etc.
             for (const name of t.fallbackChain) {
                 const match = staff.find(s => namesMatch(s.name, name));
-                if(match) {
+                if (match) {
+                    // NEW: Compatibility Check (Uses computed numbers now)
+                    if (!isStaffCompatibleWithTask(match.compStart, match.compEnd, t)) {
+                        console.log(`Skipping ${match.name} for ${t.name} (Incompatible: Start ${match.compStart}, End ${match.compEnd})`);
+                        continue;
+                    }
+
                     assign(match.name, t);
                     assigned = true;
                     break;
@@ -351,7 +460,10 @@ export default function App() {
 
             // Fallback: If no priority match found, assign to best available
             if (!assigned) {
-                const anyStaff = [...staff].sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
+                const anyStaff = [...staff]
+                    .filter(s => isStaffCompatibleWithTask(s.compStart, s.compEnd, t))
+                    .sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
+                
                 if(anyStaff.length > 0) assign(anyStaff[0].name, t);
             }
         });
@@ -383,7 +495,7 @@ export default function App() {
                  let assigned = false;
                  for (const name of t.fallbackChain) {
                      const match = staff.find(s => namesMatch(s.name, name));
-                     if(match) {
+                     if(match && isStaffCompatibleWithTask(match.compStart, match.compEnd, t)) {
                          assign(match.name, t);
                          assigned = true;
                          break;
@@ -396,11 +508,18 @@ export default function App() {
         });
 
         // Round Robin the remaining poolTasks
-        let rrStaff = [...staff].sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
-        if (rrStaff.length > 0) {
-            poolTasks.forEach((t, i) => {
-                const worker = rrStaff[i % rrStaff.length];
-                assign(worker.name, t);
+        // Filter RR staff by time compatibility for early/late tasks
+        if (poolTasks.length > 0) {
+            // We rotate through tasks
+            poolTasks.forEach((t) => {
+                // Find eligible staff for THIS specific task
+                const eligibleStaff = staff
+                    .filter(s => isStaffCompatibleWithTask(s.compStart, s.compEnd, t))
+                    .sort((a,b) => getWorkerLoad(a.name, newAssignments) - getWorkerLoad(b.name, newAssignments));
+
+                if (eligibleStaff.length > 0) {
+                    assign(eligibleStaff[0].name, t);
+                }
             });
         }
 
