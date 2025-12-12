@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ScheduleData } from "../types";
+import { getGeminiApiKey } from "./env";
 
 const fileToGenerativePart = async (file: File) => {
   const base64EncodedDataPromise = new Promise<string>((resolve) => {
@@ -14,8 +15,8 @@ const fileToGenerativePart = async (file: File) => {
   });
   
   return {
-    inlineData: { 
-        data: await base64EncodedDataPromise, 
+    inlineData: {
+        data: await base64EncodedDataPromise,
         mimeType: file.type 
     },
   };
@@ -36,7 +37,7 @@ const cleanJsonString = (str: string) => {
 
 export const OCRService = {
   parseSchedule: async (file: File): Promise<ScheduleData> => {
-     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+     const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
      const filePart = await fileToGenerativePart(file);
 
      // Define Prompt with stricter constraints
