@@ -16,9 +16,7 @@ import { PRIORITY_PINNED_IDS } from './constants';
 import { StorageService } from './services/storageService';
 import { AIService } from './services/aiService';
 import TaskDBModal from './components/TaskDBModal';
-import AuthGate from '/src/components/AuthGate';
-import { db } from '/src/services/db';
-import { getSupabaseClient } from '/src/services/supabaseClient';
+import { signInWithEmail, signInWithGoogle, supabase } from './src/services/supabaseClient';
 
 // --- Utility Functions ---
 
@@ -299,7 +297,7 @@ const namesMatch = (n1: string, n2: string) => {
     return s1.includes(s2) || s2.includes(s1);
 };
 
-function RosterApp({ session }: { session: Session | null }) {
+function RosterApp({ session }: { session: Session }) {
   const [activeTab, setActiveTab] = useState<'schedule' | 'tasks' | 'team'>('tasks');
   const [selectedDay, setSelectedDay] = useState<DayKey>('fri');
 
@@ -313,8 +311,6 @@ function RosterApp({ session }: { session: Session | null }) {
   const [memberSkills, setMemberSkills] = useState<any[]>([]);
   const [managerSettings, setManagerSettings] = useState<any[]>([]);
   const [weeklyScheduleMeta, setWeeklyScheduleMeta] = useState<any[]>([]);
-  const [memberAliases, setMemberAliases] = useState<any[]>([]);
-  const [explicitRules, setExplicitRules] = useState<any[]>([]);
 
   // UI States
   const [isLoading, setIsLoading] = useState(true);
@@ -360,39 +356,41 @@ function RosterApp({ session }: { session: Session | null }) {
         setSupabaseLoading(true);
         setSupabaseError(null);
 
-        const supabaseAvailable = !!getSupabaseClient();
-
-        if (!supabaseAvailable || !session) {
-            const fallback = await loadLocalFallback();
-            if (isMounted) {
-                if (!supabaseAvailable) setSupabaseError('Supabase is not configured. Using local data only.');
-                setSchedule(fallback.schedule);
-                setTaskDB(fallback.taskDB);
-                setAssignments(fallback.assignments);
-                setTeam(fallback.team);
-                setIsLoading(false);
-                setSupabaseLoading(false);
-            }
-            return;
-        }
-
         try {
-            const data = await db.loadAll();
+            const [
+                tasksRes,
+                areasRes,
+                membersRes,
+                memberSkillsRes,
+                skillsRes,
+                managerSettingsRes,
+                weeklyScheduleRes,
+                plannedShiftsRes,
+                assignmentsRes,
+            ] = await Promise.all([
+                supabase.from('tasks').select('*').order('id', { ascending: true }),
+                supabase.from('areas').select('*'),
+                supabase.from('members').select('*'),
+                supabase.from('member_skills').select('*'),
+                supabase.from('skills').select('*'),
+                supabase.from('manager_settings').select('*'),
+                supabase.from('weekly_schedule').select('*').order('created_at', { ascending: false }),
+                supabase.from('planned_shifts').select('*'),
+                supabase.from('assignments').select('*'),
+            ]);
 
             if (!isMounted) return;
 
-            const taskRules = mapTaskRulesFromSupabase(data.tasks || []);
-            const members = mapMembersFromSupabase(data.members || []);
-            const scheduleFromSupabase = mapScheduleFromSupabase(data.weekly_schedule || [], data.planned_shifts || []);
-            const assignmentsFromSupabase = mapAssignmentsFromSupabase(data.assignments || []);
+            const taskRules = mapTaskRulesFromSupabase(tasksRes.data || []);
+            const members = mapMembersFromSupabase(membersRes.data || []);
+            const scheduleFromSupabase = mapScheduleFromSupabase(weeklyScheduleRes.data || [], plannedShiftsRes.data || []);
+            const assignmentsFromSupabase = mapAssignmentsFromSupabase(assignmentsRes.data || []);
 
-            setAreas(data.areas || []);
-            setSkills(data.skills || []);
-            setMemberSkills(data.member_skills || []);
-            setManagerSettings(data.manager_settings || []);
-            setWeeklyScheduleMeta(data.weekly_schedule || []);
-            setMemberAliases(data.member_aliases || []);
-            setExplicitRules(data.explicit_rules || []);
+            setAreas(areasRes.data || []);
+            setSkills(skillsRes.data || []);
+            setMemberSkills(memberSkillsRes.data || []);
+            setManagerSettings(managerSettingsRes.data || []);
+            setWeeklyScheduleMeta(weeklyScheduleRes.data || []);
 
             let fallbackData: Awaited<ReturnType<typeof loadLocalFallback>> | null = null;
             const getFallbackData = async () => {
@@ -432,8 +430,21 @@ function RosterApp({ session }: { session: Session | null }) {
                 setAssignments(fallback.assignments);
             }
 
-            if (!taskRules.length && !members.length && !scheduleFromSupabase && !Object.keys(assignmentsFromSupabase).length) {
-                setSupabaseError('Supabase returned no data. Using local data.');
+            const anyErrors = [
+                tasksRes.error,
+                areasRes.error,
+                membersRes.error,
+                memberSkillsRes.error,
+                skillsRes.error,
+                managerSettingsRes.error,
+                weeklyScheduleRes.error,
+                plannedShiftsRes.error,
+                assignmentsRes.error,
+            ].filter(Boolean);
+
+            if (anyErrors.length) {
+                console.warn('Supabase fetch returned errors', anyErrors.map(e => e?.message));
+                setSupabaseError('Some Supabase data could not be loaded. Using available data.');
             }
 
         } catch (e) {
@@ -1376,9 +1387,111 @@ function RosterApp({ session }: { session: Session | null }) {
 }
 
 export default function App() {
-  return (
-    <AuthGate>
-      {(session) => <RosterApp session={session} />}
-    </AuthGate>
-  );
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [email, setEmail] = useState('');
+  const [emailNotice, setEmailNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const syncSession = async () => {
+      const { data, error } = await supabase.auth.getSession();
+      if (!isMounted) return;
+      if (error) setAuthError(error.message);
+      setSession(data.session ?? null);
+      setAuthReady(true);
+    };
+
+    syncSession();
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      if (!isMounted) return;
+      setSession(newSession);
+      if (newSession) {
+        setAuthError(null);
+        setEmailNotice(null);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      listener?.subscription?.unsubscribe();
+    };
+  }, []);
+
+  const handleMagicLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setEmailNotice(null);
+    const { error } = await signInWithEmail(email);
+    if (error) {
+      setAuthError(error.message);
+    } else {
+      setEmailNotice('Magic link sent! Check your email to continue.');
+    }
+  };
+
+  const handleGoogle = async () => {
+    setAuthError(null);
+    const { error } = await signInWithGoogle();
+    if (error) setAuthError(error.message);
+  };
+
+  if (!authReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-100 text-slate-600">
+        <div className="flex items-center gap-3">
+          <Loader2 className="animate-spin text-indigo-600" />
+          <span className="font-medium">Checking your session…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white p-6">
+        <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-xl w-full max-w-md space-y-6 p-8">
+          <div>
+            <h1 className="text-xl font-bold">Sign in to SmartRoster</h1>
+            <p className="text-sm text-slate-400">Use a magic link or continue with Google.</p>
+          </div>
+          <form onSubmit={handleMagicLink} className="space-y-3">
+            <label className="text-sm font-semibold text-slate-200">Work email</label>
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-white focus:border-indigo-500 focus:outline-none"
+              placeholder="you@example.com"
+            />
+            <button
+              type="submit"
+              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 rounded-lg shadow-lg shadow-indigo-500/20 transition-colors"
+            >
+              Send magic link
+            </button>
+          </form>
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            <div className="flex-1 h-px bg-slate-700" />
+            <span>or</span>
+            <div className="flex-1 h-px bg-slate-700" />
+          </div>
+          <button
+            onClick={handleGoogle}
+            className="w-full bg-white text-slate-900 font-bold py-2.5 rounded-lg shadow-lg shadow-slate-900/20 hover:bg-slate-100 transition-colors flex items-center justify-center gap-2"
+          >
+            <span>Continue with Google</span>
+          </button>
+          {emailNotice && <div className="text-emerald-300 text-sm">{emailNotice}</div>}
+          {authError && <div className="text-rose-300 text-sm">{authError}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  return <RosterApp session={session} />;
 }
