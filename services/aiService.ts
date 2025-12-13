@@ -1,7 +1,7 @@
 
 import { GoogleGenAI } from "@google/genai";
 import { ScheduleData, TaskRule } from "../types";
-import { getGeminiApiKey } from "src/services/env";
+import { getGeminiApiKey } from "./env";
 
 const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
 

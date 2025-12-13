@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ScheduleData } from "../types";
-import { getGeminiApiKey } from "src/services/env";
+import { getGeminiApiKey } from "./env";
 
 const fileToGenerativePart = async (file: File) => {
   const base64EncodedDataPromise = new Promise<string>((resolve) => {
