@@ -8,14 +8,7 @@ const getRequiredEnvVar = (key: keyof ImportMetaEnv, label: string): string => {
   return value;
 };
 
-export const getGeminiApiKey = (): string | null => {
-  const key = import.meta.env.VITE_GEMINI_API_KEY;
-  if (!key) {
-    console.warn('Gemini API key not set. AI features are disabled.');
-    return null;
-  }
-  return key;
-};
+export const getGeminiApiKey = (): string => getRequiredEnvVar('VITE_GEMINI_API_KEY', 'Gemini API key');
 
 export const getSupabaseConfig = () => ({
   supabaseUrl: getEnvVar('VITE_SUPABASE_URL') || '',
