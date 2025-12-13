@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Session } from '@supabase/supabase-js';
 import { 
   Users, Calendar, CheckCircle, Wand2, Printer, 
   Download, Upload, Plus, Trash2, ArrowRight, X, 
@@ -7,18 +8,111 @@ import {
   Camera, Zap, Sparkles, MessageSquare, RefreshCw
 } from 'lucide-react';
 
-import { 
-  ScheduleData, TaskRule, TaskAssignmentMap, 
-  DayKey, Shift, AssignedTask, DAY_LABELS, Employee 
+import {
+  ScheduleData, TaskRule, TaskAssignmentMap,
+  DayKey, Shift, AssignedTask, DAY_LABELS, Employee, TaskType
 } from './types';
 import { PRIORITY_PINNED_IDS } from './constants';
 import { StorageService } from './services/storageService';
-import { AIService } from './services/aiService'; 
+import { AIService } from './services/aiService';
 import TaskDBModal from './components/TaskDBModal';
+import AuthGate from '/src/components/AuthGate';
+import { db } from '/src/services/db';
+import { getSupabaseClient } from '/src/services/supabaseClient';
 
 // --- Utility Functions ---
 
 const ORDERED_DAYS: DayKey[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+const DAY_KEYS: DayKey[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+const normalizeDayKey = (value: any): DayKey | null => {
+    if (!value) return null;
+    const key = String(value).toLowerCase();
+    return (DAY_KEYS as string[]).includes(key) ? (key as DayKey) : null;
+};
+
+const makeLocalId = () =>
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+const parseFallbackChain = (value: any): string[] => {
+    if (Array.isArray(value)) return value.filter(Boolean);
+    if (typeof value === 'string') return value.split(',').map(v => v.trim()).filter(Boolean);
+    return [];
+};
+
+const parseExcludedDays = (value: any): DayKey[] => {
+    if (!Array.isArray(value)) return [];
+    return value.map(v => normalizeDayKey(v)).filter(Boolean) as DayKey[];
+};
+
+const mapTaskRulesFromSupabase = (rows: any[] = []): TaskRule[] => rows.map((row) => ({
+    id: Number(row.id ?? row.task_id ?? Date.now()),
+    code: row.code ?? row.task_code ?? '',
+    name: row.name ?? row.title ?? 'Task',
+    type: (row.type as TaskType) ?? 'general',
+    fallbackChain: parseFallbackChain(row.fallback_chain ?? row.fallbackChain),
+    timing: row.timing ?? row.time_window ?? undefined,
+    dueTime: row.due_time ?? row.dueTime ?? undefined,
+    effort: row.effort ?? row.duration ?? undefined,
+    frequency: row.frequency ?? undefined,
+    frequencyDay: normalizeDayKey(row.frequency_day) ?? undefined,
+    frequencyDate: row.frequency_date ?? undefined,
+    excludedDays: parseExcludedDays(row.excluded_days ?? row.excludedDays),
+}));
+
+const mapMembersFromSupabase = (rows: any[] = []): Employee[] => rows.map((row) => ({
+    id: String(row.id ?? row.member_id ?? makeLocalId()),
+    name: row.name ?? [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Member',
+    role: row.role ?? row.title ?? 'Team Member',
+    isActive: row.is_active ?? row.active ?? true,
+    email: row.email ?? undefined,
+    phone: row.phone ?? row.phone_number ?? undefined,
+}));
+
+const mapShiftsFromPlanned = (rows: any[] = []): Shift[] => rows.map((row) => ({
+    id: String(row.id ?? row.shift_id ?? row.member_id ?? makeLocalId()),
+    name: row.name ?? row.employee_name ?? row.member_name ?? 'Member',
+    role: row.role ?? row.title ?? 'Team Member',
+    sun: row.sun ?? row.sunday ?? row.sun_shift ?? 'OFF',
+    mon: row.mon ?? row.monday ?? row.mon_shift ?? 'OFF',
+    tue: row.tue ?? row.tuesday ?? row.tue_shift ?? 'OFF',
+    wed: row.wed ?? row.wednesday ?? row.wed_shift ?? 'OFF',
+    thu: row.thu ?? row.thursday ?? row.thu_shift ?? 'OFF',
+    fri: row.fri ?? row.friday ?? row.fri_shift ?? 'OFF',
+    sat: row.sat ?? row.saturday ?? row.sat_shift ?? 'OFF',
+    isManual: row.is_manual ?? row.is_manual_edit ?? undefined,
+}));
+
+const mapScheduleFromSupabase = (weeklyScheduleRows: any[] = [], plannedShiftRows: any[] = []): ScheduleData | null => {
+    const weekPeriod = weeklyScheduleRows[0]?.week_period || weeklyScheduleRows[0]?.name || 'New Week';
+    const shifts = mapShiftsFromPlanned(plannedShiftRows);
+    if (!shifts.length) return null;
+    return { week_period: weekPeriod, shifts };
+};
+
+const ensureAssignedTask = (task: any, idx: number, dayKey: DayKey, employeeName: string): AssignedTask => ({
+    ...task,
+    type: task?.type ?? 'general',
+    fallbackChain: parseFallbackChain(task?.fallbackChain ?? task?.fallback_chain),
+    excludedDays: parseExcludedDays(task?.excludedDays ?? task?.excluded_days),
+    instanceId: task?.instanceId || task?.instance_id || `${dayKey}-${employeeName}-${idx}-${task?.id ?? makeLocalId()}`,
+    isComplete: task?.isComplete ?? task?.is_complete,
+});
+
+const mapAssignmentsFromSupabase = (rows: any[] = []): TaskAssignmentMap => {
+    const map: TaskAssignmentMap = {};
+    rows.forEach((row) => {
+        const dayKey = normalizeDayKey(row.day_key ?? row.day ?? row.dayKey);
+        const employeeName = row.employee_name ?? row.employee ?? row.member_name ?? row.name;
+        if (!dayKey || !employeeName) return;
+        const tasks = Array.isArray(row.tasks) ? row.tasks : Array.isArray(row.payload) ? row.payload : [];
+        map[`${dayKey}-${employeeName}`] = tasks.map((task, idx) => ensureAssignedTask(task, idx, dayKey, employeeName));
+    });
+    return map;
+};
 
 const cleanTaskName = (n: string) => n.replace(/\(Sat Only\)/gi, '').replace(/\(Fri Only\)/gi, '').replace(/\(Excl.*?\)/gi, '').trim();
 
@@ -205,15 +299,22 @@ const namesMatch = (n1: string, n2: string) => {
     return s1.includes(s2) || s2.includes(s1);
 };
 
-export default function App() {
+function RosterApp({ session }: { session: Session | null }) {
   const [activeTab, setActiveTab] = useState<'schedule' | 'tasks' | 'team'>('tasks');
   const [selectedDay, setSelectedDay] = useState<DayKey>('fri');
-  
+
   // Data States
   const [schedule, setSchedule] = useState<ScheduleData | null>(null);
   const [taskDB, setTaskDB] = useState<TaskRule[]>([]);
   const [assignments, setAssignments] = useState<TaskAssignmentMap>({});
   const [team, setTeam] = useState<Employee[]>([]);
+  const [areas, setAreas] = useState<any[]>([]);
+  const [skills, setSkills] = useState<any[]>([]);
+  const [memberSkills, setMemberSkills] = useState<any[]>([]);
+  const [managerSettings, setManagerSettings] = useState<any[]>([]);
+  const [weeklyScheduleMeta, setWeeklyScheduleMeta] = useState<any[]>([]);
+  const [memberAliases, setMemberAliases] = useState<any[]>([]);
+  const [explicitRules, setExplicitRules] = useState<any[]>([]);
 
   // UI States
   const [isLoading, setIsLoading] = useState(true);
@@ -222,49 +323,140 @@ export default function App() {
   const [showAutoAssignConfirm, setShowAutoAssignConfirm] = useState(false);
   const [isEditingSchedule, setIsEditingSchedule] = useState(false);
   const [manualTaskInput, setManualTaskInput] = useState<{emp: string, text: string} | null>(null);
-  
+  const [supabaseError, setSupabaseError] = useState<string | null>(null);
+  const [supabaseLoading, setSupabaseLoading] = useState(false);
+
   // AI States
   const [isScanning, setIsScanning] = useState(false);
   const [scanStatus, setScanStatus] = useState<string>('');
   const [huddleText, setHuddleText] = useState<string | null>(null);
   const [aiTasks, setAiTasks] = useState<TaskRule[] | null>(null);
-  
+
   const scanInputRef = useRef<HTMLInputElement>(null);
   const workAreaInputRef = useRef<HTMLInputElement>(null);
 
+  const loadLocalFallback = useCallback(async () => {
+    const [localSchedule, localTasks, localAssignments, localTeam] = await Promise.all([
+        StorageService.getSchedule(),
+        StorageService.getTaskDB(),
+        StorageService.getAssignments(),
+        StorageService.getTeam()
+    ]);
+
+    return {
+        schedule: localSchedule,
+        taskDB: localTasks,
+        assignments: localAssignments,
+        team: localTeam,
+    };
+  }, []);
+
   // Initial Load
   useEffect(() => {
+    let isMounted = true;
+
     const loadData = async () => {
         setIsLoading(true);
-        console.log("App: Starting initial data load...");
-        try {
-            const [s, t, a, tm] = await Promise.all([
-                StorageService.getSchedule(),
-                StorageService.getTaskDB(),
-                StorageService.getAssignments(),
-                StorageService.getTeam()
-            ]);
-            
-            console.log("App: Data loaded successfully", { 
-                shifts: s?.shifts?.length, 
-                tasks: t?.length, 
-                assignments: Object.keys(a).length, 
-                team: tm?.length 
-            });
+        setSupabaseLoading(true);
+        setSupabaseError(null);
 
-            setSchedule(s);
-            setTaskDB(t);
-            setAssignments(a);
-            setTeam(tm);
+        const supabaseAvailable = !!getSupabaseClient();
+
+        if (!supabaseAvailable || !session) {
+            const fallback = await loadLocalFallback();
+            if (isMounted) {
+                if (!supabaseAvailable) setSupabaseError('Supabase is not configured. Using local data only.');
+                setSchedule(fallback.schedule);
+                setTaskDB(fallback.taskDB);
+                setAssignments(fallback.assignments);
+                setTeam(fallback.team);
+                setIsLoading(false);
+                setSupabaseLoading(false);
+            }
+            return;
+        }
+
+        try {
+            const data = await db.loadAll();
+
+            if (!isMounted) return;
+
+            const taskRules = mapTaskRulesFromSupabase(data.tasks || []);
+            const members = mapMembersFromSupabase(data.members || []);
+            const scheduleFromSupabase = mapScheduleFromSupabase(data.weekly_schedule || [], data.planned_shifts || []);
+            const assignmentsFromSupabase = mapAssignmentsFromSupabase(data.assignments || []);
+
+            setAreas(data.areas || []);
+            setSkills(data.skills || []);
+            setMemberSkills(data.member_skills || []);
+            setManagerSettings(data.manager_settings || []);
+            setWeeklyScheduleMeta(data.weekly_schedule || []);
+            setMemberAliases(data.member_aliases || []);
+            setExplicitRules(data.explicit_rules || []);
+
+            let fallbackData: Awaited<ReturnType<typeof loadLocalFallback>> | null = null;
+            const getFallbackData = async () => {
+                if (!fallbackData) fallbackData = await loadLocalFallback();
+                return fallbackData;
+            };
+
+            if (scheduleFromSupabase) {
+                setSchedule(scheduleFromSupabase);
+            } else {
+                const fallback = await getFallbackData();
+                if (!isMounted) return;
+                setSchedule(fallback.schedule);
+            }
+
+            if (taskRules.length) {
+                setTaskDB(taskRules);
+            } else {
+                const fallback = await getFallbackData();
+                if (!isMounted) return;
+                setTaskDB(fallback.taskDB);
+            }
+
+            if (members.length) {
+                setTeam(members);
+            } else {
+                const fallback = await getFallbackData();
+                if (!isMounted) return;
+                setTeam(fallback.team);
+            }
+
+            if (Object.keys(assignmentsFromSupabase).length) {
+                setAssignments(assignmentsFromSupabase);
+            } else {
+                const fallback = await getFallbackData();
+                if (!isMounted) return;
+                setAssignments(fallback.assignments);
+            }
+
+            if (!taskRules.length && !members.length && !scheduleFromSupabase && !Object.keys(assignmentsFromSupabase).length) {
+                setSupabaseError('Supabase returned no data. Using local data.');
+            }
+
         } catch (e) {
             console.error("Failed to load data", e);
-            alert("Error loading data. Please check console.");
+            const fallback = await loadLocalFallback();
+            if (isMounted) {
+                setSupabaseError('Unable to load Supabase data. Using local data instead.');
+                setSchedule(fallback.schedule);
+                setTaskDB(fallback.taskDB);
+                setAssignments(fallback.assignments);
+                setTeam(fallback.team);
+            }
         } finally {
-            setIsLoading(false);
+            if (isMounted) {
+                setIsLoading(false);
+                setSupabaseLoading(false);
+            }
         }
     };
     loadData();
-  }, []);
+
+    return () => { isMounted = false; };
+  }, [session, loadLocalFallback]);
 
   // Autosave Effects (Debounced)
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -283,10 +475,10 @@ export default function App() {
       }, 500);
   };
 
-  useEffect(() => { if (schedule) saveData('sched', () => StorageService.saveSchedule(schedule)); }, [schedule]);
-  useEffect(() => { if (taskDB.length) saveData('taskdb', () => StorageService.saveTaskDB(taskDB)); }, [taskDB]);
-  useEffect(() => { if (Object.keys(assignments).length) saveData('assign', () => StorageService.saveAssignments(assignments)); }, [assignments]);
-  useEffect(() => { if (team.length) saveData('team', () => StorageService.saveTeam(team)); }, [team]);
+    useEffect(() => { if (schedule) saveData('sched', () => StorageService.saveSchedule(schedule, session)); }, [schedule, session]);
+    useEffect(() => { saveData('taskdb', () => StorageService.saveTaskDB(taskDB, session)); }, [taskDB, session]);
+    useEffect(() => { if (Object.keys(assignments).length) saveData('assign', () => StorageService.saveAssignments(assignments, session)); }, [assignments, session]);
+    useEffect(() => { if (team.length) saveData('team', () => StorageService.saveTeam(team, session)); }, [team, session]);
 
   const handlePrint = () => {
       console.log("Print initiated by user.");
@@ -710,7 +902,7 @@ export default function App() {
       return (
           <div className="h-screen w-full flex flex-col items-center justify-center bg-slate-100 text-slate-500 gap-4">
               <Loader2 size={48} className="animate-spin text-indigo-600"/>
-              <p className="font-medium animate-pulse">Connecting to database...</p>
+              <p className="font-medium animate-pulse">Hydrating your workspace...</p>
           </div>
       );
   }
@@ -727,9 +919,9 @@ export default function App() {
                    <h1 className="font-bold text-lg leading-tight">SmartRoster Pro</h1>
                    {isSaving && <Loader2 size={12} className="animate-spin text-indigo-400"/>}
                </div>
-               <div className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Manager Dashboard</div>
-           </div>
-        </div>
+              <div className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold flex items-center gap-2">Manager Dashboard {supabaseLoading && <span className="text-indigo-300">Syncing…</span>}</div>
+          </div>
+       </div>
         <div className="flex items-center gap-4">
            <div className="flex bg-slate-800 rounded-lg p-1">
              <button onClick={()=>setActiveTab('tasks')} className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${activeTab==='tasks'?'bg-slate-700 text-white shadow':'text-slate-400 hover:text-white'}`}>Worklists</button>
@@ -744,6 +936,13 @@ export default function App() {
            </label>
         </div>
       </nav>
+
+      {supabaseError && (
+        <div className="bg-amber-100 text-amber-800 text-sm px-6 py-2 border-b border-amber-200 flex items-center gap-2">
+          <AlertCircle size={16} />
+          <span>{supabaseError}</span>
+        </div>
+      )}
 
       <main className="flex-1 overflow-hidden relative flex flex-col">
         {activeTab === 'tasks' && (
@@ -1173,5 +1372,13 @@ export default function App() {
       )}
 
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthGate>
+      {(session) => <RosterApp session={session} />}
+    </AuthGate>
   );
 }
