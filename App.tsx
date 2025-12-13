@@ -486,10 +486,10 @@ function RosterApp({ session }: { session: Session }) {
       }, 500);
   };
 
-  useEffect(() => { if (schedule) saveData('sched', () => StorageService.saveSchedule(schedule)); }, [schedule]);
-  useEffect(() => { if (taskDB.length) saveData('taskdb', () => StorageService.saveTaskDB(taskDB)); }, [taskDB]);
-  useEffect(() => { if (Object.keys(assignments).length) saveData('assign', () => StorageService.saveAssignments(assignments)); }, [assignments]);
-  useEffect(() => { if (team.length) saveData('team', () => StorageService.saveTeam(team)); }, [team]);
+    useEffect(() => { if (schedule) saveData('sched', () => StorageService.saveSchedule(schedule, session)); }, [schedule, session]);
+    useEffect(() => { saveData('taskdb', () => StorageService.saveTaskDB(taskDB, session)); }, [taskDB, session]);
+    useEffect(() => { if (Object.keys(assignments).length) saveData('assign', () => StorageService.saveAssignments(assignments, session)); }, [assignments, session]);
+    useEffect(() => { if (team.length) saveData('team', () => StorageService.saveTeam(team, session)); }, [team, session]);
 
   const handlePrint = () => {
       console.log("Print initiated by user.");
@@ -913,7 +913,7 @@ function RosterApp({ session }: { session: Session }) {
       return (
           <div className="h-screen w-full flex flex-col items-center justify-center bg-slate-100 text-slate-500 gap-4">
               <Loader2 size={48} className="animate-spin text-indigo-600"/>
-              <p className="font-medium animate-pulse">Connecting to database...</p>
+              <p className="font-medium animate-pulse">Hydrating your workspace...</p>
           </div>
       );
   }

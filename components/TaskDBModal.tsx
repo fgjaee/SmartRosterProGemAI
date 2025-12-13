@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { X, Trash2, Plus, ArrowLeft, ArrowRight, Database, Download, Upload, Save, CalendarClock, Ban, Clock } from 'lucide-react';
 import { TaskRule, TaskType, DAY_LABELS, DayKey } from '../types';
+import { db } from '/src/services/db';
 
 interface Props {
   isOpen: boolean;
@@ -33,12 +34,18 @@ export default function TaskDBModal({ isOpen, onClose, tasks, setTasks, staffNam
       setTasks((prev) => prev.map(t => t.id === id ? { ...t, excludedDays: newExcluded } : t));
   };
 
-  const handleDeleteTask = (e: React.MouseEvent, id: number | string) => {
+  const handleDeleteTask = async (e: React.MouseEvent, id: number | string) => {
     e.stopPropagation();
-    if(window.confirm("Are you sure you want to permanently delete this rule?")) {
-        // Robust delete: Functional update + String conversion for safety
-        setTasks((prev) => prev.filter(t => String(t.id) !== String(id)));
+    if (!window.confirm('Are you sure you want to permanently delete this rule?')) return;
+
+    const success = await db.deleteTask(id);
+
+    if (success) {
+      setTasks((prev) => prev.filter((t) => String(t.id) !== String(id)));
+      return;
     }
+
+    alert('Failed to delete task. Please try again.');
   };
 
   const handleAddFallback = (id: number) => {
