@@ -17,10 +17,23 @@
         @page { margin: 0.5cm; size: landscape; }
         body { -webkit-print-color-adjust: exact; }
         .no-print { display: none !important; }
-        .print-only { display: block !important; }
-        .break-inside-avoid { page-break-inside: avoid; }
+        
+        /* Explicitly hide the interactive app root during print */
+        #app-root { display: none !important; }
+        
+        /* Explicitly show the print root during print */
+        #print-root { display: block !important; }
+        
+        /* Reset containers */
+        html, body { 
+          height: auto !important; 
+          overflow: visible !important; 
+          width: 100% !important;
+          background: white !important;
+        }
       }
-      .print-only { display: none; }
+      /* Hide print root on screen */
+      #print-root { display: none; }
     </style>
   <script type="importmap">
 {

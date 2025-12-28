@@ -71,13 +71,9 @@ export const DAY_LABELS: Record<DayKey, string> = {
   sat: 'Saturday'
 };
 
+// Intentionally empty default. The app now generates the initial schedule 
+// dynamically from the Team Database in StorageService.ts
 export const INITIAL_SCHEDULE: ScheduleData = {
   week_period: 'New Week',
-  shifts: [
-    { id: '1', name: "Cannon, Beth M", role: "Lead", sun: "12:00-8:00", mon: "6:00-2:00", tue: "7:00-3:00", wed: "OFF", thu: "5:00-1:00", fri: "OFF", sat: "7:00-3:00" },
-    { id: '2', name: "Powell, Marlon", role: "Overnight", sun: "OFF", mon: "OFF", tue: "1:00-9:00", wed: "1:00-9:00", thu: "OFF", fri: "1:00-9:00", sat: "8:00-4:00" },
-    { id: '3', name: "Wood, William B", role: "Stock", sun: "OFF", mon: "5:00-1:00", tue: "5:00-1:00", wed: "5:00-1:00", thu: "OFF", fri: "5:00-1:00", sat: "5:00-1:00" },
-    { id: '4', name: "Cooley, Sandra K", role: "Stock", sun: "OFF", mon: "OFF", tue: "4:00-12:00", wed: "4:00-12:00", thu: "4:00-12:00", fri: "4:00-12:00", sat: "4:00-12:00" },
-    { id: '5', name: "Mullinix, James", role: "Supervisor", sun: "5:00-1:00", mon: "5:00-1:00", tue: "1:15-8:00", wed: "2:00-10:00", thu: "OFF", fri: "5:00-1:00", sat: "OFF" }
-  ]
+  shifts: [] 
 };
